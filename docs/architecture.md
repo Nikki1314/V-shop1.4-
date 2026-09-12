@@ -1,40 +1,63 @@
 # Architecture
 
+V-Shop is a single-process, asynchronous Telegram bot: aiogram 3 on asyncio, with
+SQLAlchemy 2 (async) and asyncpg over PostgreSQL 16. This document describes the
+layers, the request path, transaction handling, and how the order flow and the
+loyalty subsystem fit together. The loyalty features have their own documents:
+[Loyalty](loyalty.md), [Roulette](roulette.md) and [Referrals](referrals.md).
+
 ## Overview
 
-V-Shop is a layered Telegram bot:
+```mermaid
+flowchart LR
+    TG["Telegram Bot API"] <-->|"long polling"| DP["aiogram Dispatcher"]
+    subgraph BOT["Bot process: Python 3.13, asyncio"]
+        DP --> MW["Outer middlewares: Logging, PrivateChat, ErrorHandling, Database, Localization"]
+        MW --> RT["Routers: user, admin, fallback"]
+        RT --> HD["Handlers and FSM states"]
+        HD --> SV["Services: catalog, cart, order, admin, loyalty, roulette, referral, notifications"]
+        SV --> RP["Repositories"]
+    end
+    RP --> PG[("PostgreSQL 16")]
+    SV -->|"new-order alerts"| MG["Manager chat"]
+    SV -->|"status and loyalty news"| CU["Customers"]
+```
 
 ```text
 Telegram update
     → Middlewares (log → private chat → errors → DB session → i18n)
-    → Routers (user | admin)
+    → Routers (user | admin | fallback)
     → Handlers
     → Services
     → Repositories
     → PostgreSQL
 ```
 
-Dependencies point inward. Handlers do not talk to SQLAlchemy sessions for business rules beyond injecting `session` into services/repositories.
+Dependencies point inward. Handlers parse updates, drive FSM state and render
+screens; business rules live in services; queries live in repositories. Handlers
+receive the `session` from the database middleware and pass it to services — they
+do not build queries themselves.
 
 ## Package map
 
 | Package | Responsibility |
 |---|---|
-| `app/handlers/` | Aiogram routers: parse updates, drive FSM, call services |
-| `app/keyboards/` | Reply / inline keyboard builders + callback prefixes |
-| `app/middlewares/` | Cross-cutting: logging, errors, session lifecycle, localization |
-| `app/filters/` | `IsAdmin`, `LocalizedText` (menu button matching) |
-| `app/services/` | Use-cases: cart, catalog, order, admin façade, broadcast, notifications |
-| `app/repositories/` | CRUD and query helpers per aggregate |
-| `app/models/` | SQLAlchemy ORM + domain enums |
-| `app/states/` | FSM `StatesGroup` definitions |
-| `app/locales/` | Nested JSON catalogs (flattened to dotted keys) |
-| `app/utils/` | Validators, labels, cache, concurrency, Telegram UI helpers |
-| `app/errors/` | Classify exceptions → safe localized user messages |
-| `app/security/` | Admin ID checks |
-| `app/config.py` | Settings |
-| `app/bot.py` | Bot + dispatcher factory |
-| `app/main.py` | Process entrypoint |
+| `app/handlers/` | aiogram routers: parse updates, drive FSM, call services, render screens |
+| `app/keyboards/` | reply / inline keyboard builders and the `CALLBACK_*` constants |
+| `app/middlewares/` | cross-cutting: request log, private-chat gate, error handling, session lifecycle, localization, admin gate |
+| `app/filters/` | `IsAdmin`, `LocalizedText` (menu buttons matched in every language) |
+| `app/services/` | use cases: catalog, cart, order, admin façade, broadcast, notifications, statistics, loyalty, roulette, rewards, referrals |
+| `app/repositories/` | CRUD and query helpers per aggregate; `visibility.py` holds the single "on sale" rule |
+| `app/models/` | SQLAlchemy ORM models and domain enums |
+| `app/states/` | FSM `StatesGroup` definitions (onboarding, checkout, admin wizards) |
+| `app/locales/` | four JSON catalogs with identical key sets |
+| `app/utils/` | validators, HTML escaping, i18n helpers, display helpers, locks, cache, Telegram UI helpers |
+| `app/errors/` | classify exceptions → safe localized user messages |
+| `app/security/` | admin id checks |
+| `app/database/` | engine and session factory (`hide_parameters=True`) |
+| `app/config.py` | Pydantic Settings — every environment variable |
+| `app/bot.py`, `app/main.py`, `app/lifecycle.py` | bot and dispatcher factories, process entry point, startup / shutdown hooks |
+| `app/check_startup.py`, `app/verify_deployment.py` | startup smoke check; read-only post-deploy report |
 
 ## Middleware order
 
@@ -55,7 +78,9 @@ Why 2 sits where it does:
 - **Ahead of Error handling**, so a failure further down can never produce a
   reply *into* a group.
 
-Dispatcher-level `errors` handlers act as a final safety net.
+Error handling sits outside Database, so the session has already rolled back
+before the user sees the error message. Dispatcher-level `errors` handlers act as
+a final safety net.
 
 ## Group-chat isolation
 
@@ -73,6 +98,135 @@ Enforced centrally, in three places that each close a different route:
 Outbound notifications still go to `MANAGER_CHAT_ID`, and carry **no inline
 keyboards** — a group must never be given buttons to press.
 
+## Transactions
+
+`DatabaseMiddleware` gives every update one database transaction: it commits when
+the handler succeeds and rolls back on any exception, so services normally only
+`flush()`. A handler commits earlier only where a Telegram side effect must
+follow a durable write:
+
+| Handler | Commits before |
+|---|---|
+| Checkout confirm (`OrderService.place_order_from_cart`) | the success message and the manager alert |
+| Admin order status change | notifying the customer and any referral payout news |
+| Stamp card claim | answering the tap |
+| Roulette spin | the animation and the result |
+| `/start` | the first reply, and telling a referrer that a friend joined |
+| 👥 Invite a Friend | sending the screen with a newly created link |
+| Broadcast confirm | the long Telegram fan-out |
+
+The rule behind these: **never await Telegram while holding a loyalty lock** — or
+any row lock. A refusal (a checkout step that cannot proceed, a refused claim, an
+invalid status tap) ends its transaction before answering. Code that runs after a
+commit only reads, without locks.
+
+## Routing
+
+```text
+root
+├── user router
+│   ├── start           /start, onboarding, referral links
+│   ├── catalog, cart
+│   ├── stamp_card      🪪 My Stamp Card
+│   ├── roulette        🎰 Lucky Roulette
+│   ├── invite          👥 Invite a Friend
+│   ├── checkout        FSM (after the loyalty menus, so their buttons win over free-text steps)
+│   ├── info            information pages, language and city, reviews
+│   └── admin_guard     /admin access denied for non-admins
+├── admin router        (IsAdmin filter + AdminOnlyMiddleware)
+│   ├── wizard_guard    blocks menu jumps while a wizard is active
+│   ├── products        add-product wizard
+│   ├── product_manage  list, view, edit, enable/disable, delete
+│   ├── categories
+│   ├── subcategories   brands
+│   ├── orders
+│   ├── broadcast
+│   ├── statistics
+│   ├── settings
+│   └── panel           /admin
+└── fallback            answers buttons nothing above handled; admin buttons excluded
+```
+
+## Main user flows
+
+### Onboarding
+
+`/start` → ensure the user row (with an empty cart and loyalty account) → welcome
+roulette spin → optional referral attribution → choose language → choose city →
+main menu: 🛍 Catalog · 🛒 Cart · 🪪 My Stamp Card · 🎰 Lucky Roulette · 👥 Invite a
+Friend · ℹ Information.
+
+### Catalog → cart
+
+Categories → brands → product cards → add to cart → cart (± quantity, remove) →
+checkout. Only products that are on sale (product, category and brand active) are
+shown and can be ordered.
+
+### Checkout (FSM)
+
+Name → delivery method (city-gated: Berlin `pickup` / `courier`, other cities
+`postal` / `service`) → address → preferred time → contact (shared contact, typed
+phone, or Telegram) → payment method (`cash` / `card`) → **reward** (only for a
+customer holding a reward that fits the cart) → summary → confirm.
+
+Confirming runs inside the customer's process-local `keyed_lock` and the FSM
+`submitted` flag, then `OrderService.place_order_from_cart` locks the cart row
+(`SELECT … FOR UPDATE`) and the customer's loyalty account, prices the lines from
+the database, re-plans any chosen reward, writes the order and clears the cart —
+one transaction, committed before the manager alert. A second tap on Confirm is
+answered "already submitted".
+
+### Order lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> New: checkout confirmed
+    New --> Accepted
+    Accepted --> Shipped
+    Shipped --> Completed
+    New --> Cancelled
+    Accepted --> Cancelled
+    Shipped --> Cancelled
+    Cancelled --> New: undo
+    Completed --> [*]
+```
+
+Transitions are defined once, in `ALLOWED_TRANSITIONS` (`app/utils/order_status.py`),
+and enforced by the service — not only by the keyboard. `Completed` is terminal.
+`AdminOrderService.change_order_status` locks the order row and re-reads its
+status, so a stale screen cannot cancel an order someone has just completed, and
+two admins tapping at once move it once.
+
+### Order and reward flow
+
+The loyalty programme hangs off the two order events that already exist — no
+second pipeline:
+
+```mermaid
+flowchart TD
+    subgraph PLACE["Checkout confirmed: one transaction"]
+        P1["Lock cart row, then the customer's loyalty account"] --> P2["Price lines from the database, check the products are on sale"]
+        P2 --> P3{"Reward chosen?"}
+        P3 -- yes --> P4["RewardService.plan, then redeem"]
+        P3 -- no --> P5["Write order and items, clear the cart"]
+        P4 --> P5
+    end
+    P5 --> N1["COMMIT, then success message and manager alert"]
+    N1 --> ADM["Admin: Accept, then Ship"]
+    ADM --> C1
+    subgraph DONE["Admin marks Completed: one transaction"]
+        C1["Lock order row, re-read status"] --> C2["Stamps on the charged total"]
+        C2 --> C3["Every Nth qualifying purchase: roulette spin"]
+        C3 --> C4["Referred customer's first paid order: referral payout"]
+    end
+    C4 --> N2["COMMIT, then customer status message and referral news"]
+```
+
+| Event | What happens, in the same transaction |
+|---|---|
+| Checkout confirmed (`OrderService.place_order_from_cart`) | the chosen reward is re-planned under lock; the order is written with a €0 unit (free bottle) or a lowered total (discount); the reward is bound to it |
+| Order completed (`AdminOrderService.change_order_status`) | stamps (`StampCardService.award_for_order`), the milestone spin (`SpinEntitlementService.grant_for_completed_order`), a first order's referral payout (`ReferralProgramService.settle_for_completed_order`) |
+
 ## Customer order status notifications
 
 When an admin changes an order's status, the customer is messaged in the language
@@ -87,36 +241,21 @@ stored on their user row — not the admin's.
 
 Implementation: `app/services/customer_notification.py`.
 
-## Statistics
-
-`StatisticsService` assembles the admin dashboard from **nine aggregate queries**
-whose count does not grow with order history — no order rows are loaded into the
-process. Month boundaries are cut in `APP_TIMEZONE` (default `Europe/Berlin`),
-so an order placed at 00:30 local on the 1st belongs to the new month even though
-it is still the previous month in UTC.
-
-Product rankings count **distinct completed orders** containing a product, not
-units sold, and cover only products that are on sale. See
-[admin-guide.md](admin-guide.md#statistics).
-
-## Reviews group
-
-Customers reach the private reviews group through an invite link the bot resolves
-on demand (or `REVIEW_INVITE_LINK` verbatim). The group's chat ID never appears
-in anything sent to a user. Links are cached in-process for an hour.
-
-## Loyalty persistence
+## Loyalty subsystem
 
 The stamp card, the roulette and the referral programme share one persistence
 layer; the tables are described in [database-schema.md](database-schema.md#loyalty).
 
-| Service | Owns |
-|---|---|
-| `LoyaltyService` (`app/services/loyalty.py`) | accounts, the stamp ledger, exchanging stamps for a free-bottle reward |
-| `RouletteService` (`app/services/roulette.py`) | spin grants, and spending a grant on a prize |
-| `RewardService` (`app/services/reward.py`) | listing rewards, binding one to an order |
-| `ReferralService` (`app/services/referral.py`) | referral codes, deep links, attribution, qualification |
-| `ReferralProgramService` (`app/services/referral_program.py`) | the programme: attribution at `/start`, the payout at the first paid order |
+| Service | Owns | Details |
+|---|---|---|
+| `LoyaltyService` (`app/services/loyalty.py`) | accounts, the stamp ledger, the account lock | [Loyalty](loyalty.md#the-stamp-ledger) |
+| `StampCardService` (`app/services/stamp_card.py`) | stamp rules, the qualifying-purchase rule, the card, claims | [Loyalty](loyalty.md) |
+| `RewardService` (`app/services/reward.py`) | reward options, planning and redemption at checkout | [Loyalty](loyalty.md#redeeming-rewards-at-checkout) |
+| `SpinEntitlementService` (`app/services/spin_entitlement.py`) | which activity earns a spin | [Roulette](roulette.md#where-spins-come-from) |
+| `RouletteEngine`, `RouletteService` (`app/services/roulette_engine.py`, `app/services/roulette.py`) | the weighted draw; spending a grant on a prize | [Roulette](roulette.md) |
+| `ReferralService`, `ReferralProgramService` (`app/services/referral.py`, `app/services/referral_program.py`) | codes, links, attribution, qualification, payout | [Referrals](referrals.md) |
+| `ReferralNotificationService` (`app/services/referral_notification.py`) | referral news after the commit | [Referrals](referrals.md#notifications) |
+| `LoyaltyActivationService` (`app/services/loyalty_activation.py`) | idempotent startup backfill of accounts and welcome spins | [Roulette](roulette.md#where-spins-come-from) |
 
 Three rules hold it together:
 
@@ -134,142 +273,9 @@ Three rules hold it together:
 Refusals a customer can cause — `InsufficientStampsError`, `StaleCardError`,
 the `Reward*Error`s, `InvalidPrizeError`, `SelfReferralError`,
 `ReferralLoopError` — derive from `LoyaltyError` (a `ValueError`), so a caller
-can answer them and still let a plain `ValueError`, a caller bug, surface. The
-services reach the database only through repositories.
-
-Business rules — how many stamps an order earns, prize weights — are not
-decided in the ledger; callers pass the amounts in. The one rule enforced at
-this level is who qualifies: `ReferralService.qualify` accepts only the
-referred customer's Completed, paid, post-launch order. SQLite cannot prove the
-locking (it ignores `FOR UPDATE`), so the PostgreSQL suites race real
-transactions when `VSHOP_TEST_POSTGRES_URL` is set (see
-[Loyalty transactions and concurrency](#loyalty-transactions-and-concurrency)),
-and `tests/test_loyalty_scenarios.py` checks on every run that each redemption
-path takes the account lock before its first write.
-
-## Stamp card engine
-
-`StampCardService` (`app/services/stamp_card.py`) applies the stamp-card rules;
-`StampCardPolicy` carries them, built from the `LOYALTY_*` settings.
-
-- **One trigger.** `AdminOrderService.set_order_status` locks the order row,
-  re-reads its status and — when the new status is `Completed` — calls
-  `award_for_order` in the same transaction. Status and stamps become durable
-  together or not at all, and a racing cancel is refused against the real status.
-- **Everything comes from the order row:** status `Completed`,
-  `loyalty_eligible` (placed after launch), charged `total_price` above zero.
-  Stamps = `floor(total_price / threshold)`, so €39.99 earns 1. An order below
-  the threshold books a 0-stamp row — it is still a purchase.
-- **Idempotent.** The ledger's unique `order_id` turns a replay into
-  `already_awarded`; `Completed` is terminal, so nothing ever needs reversing.
-- **No input can grant stamps.** Nothing outside `app/services/` calls the
-  ledger or binds a reward, and each booking call has exactly one caller;
-  `tests/test_stamp_card.py` pins both. It also requires the status-change
-  handler to pass its settings — without them, completion would silently apply
-  the default rules.
-
-## Free-bottle rewards
-
-Two steps, one reward row (`user_rewards`) whatever the source:
-
-1. **Unlock** — `StampCardService.claim_free_bottle` spends exactly
-   `LOYALTY_STAMPS_REQUIRED` stamps under the account lock and issues an
-   available free-bottle reward; the ledger's redemption row names it. A roulette
-   free-bottle prize issues the same kind of reward. Passing the card's
-   `version` (its latest ledger id) makes one rendered card claimable once, so a
-   double tap is refused with `StaleCardError`.
-2. **Redeem** — at checkout, `OrderService.place_order_from_cart(reward_id=…)`
-   asks `RewardService.plan` (locks and validates the reward before anything is
-   written, and picks the dearest product within its price cap), creates the
-   order with that unit at €0, and `RewardService.redeem` binds the reward and
-   records `discount_amount` and `redeemed_product_id`. One transaction: if any
-   step fails, the reward stays available and no order exists. A roulette
-   percentage discount goes through the same two calls: its plan takes the
-   percentage off the order total (rounded half up to the cent) instead of
-   freeing a unit.
-
-## Roulette spin entitlements
-
-`SpinEntitlementService` (`app/services/spin_entitlement.py`) decides which
-activity earns a spin; `SpinPolicy` carries the `ROULETTE_INITIAL_FREE_SPIN`,
-`ROULETTE_SPIN_EVERY_N_PURCHASES` and `REFERRAL_SPINS` settings. Every grant is a
-`roulette_spin_grants` row naming its reason and source — the audit trail — and
-a unique constraint per source keeps each to a single grant:
-
-| Source | Granted by | Keyed on |
-|---|---|---|
-| Welcome spin | `/start`, and a backfill of every customer without one at each bot start (`LoyaltyActivationService.activate_everyone`, run by `activate_loyalty` in `app/lifecycle.py`, which also opens missing loyalty accounts) | partial unique index: one `initial_promo` grant per user |
-| Every Nth purchase | `AdminOrderService.set_order_status` on `Completed`, right after the stamp award, same transaction | `order_id` |
-| Referral | `grant_for_referral`, to the referrer, once the referral qualifies | `(referral_id, user_id)` |
-
-A qualifying purchase is a purchase row in the stamp ledger (Completed, placed
-after launch, charged more than €0), numbered among the customer's purchase
-rows; the interval in force when the order completes decides, so changing it
-never grants for past purchases. A replayed completion, a restart or a race can
-never grant twice. `SpinEntitlementService.balance` reports available and used
-spins by reason.
-
-## Roulette prize engine
-
-`RouletteEngine` (`app/services/roulette_engine.py`) draws the prize;
-`RouletteService.spin` spends the spin.
-
-- **The server decides.** `PRIZE_CATALOGUE` defines the prizes (+1 and +2
-  stamps, 5% and 10% discounts, a free bottle); `RoulettePolicy` weighs them from
-  the `ROULETTE_PRIZE_*_WEIGHT` settings; the draw is one integer ticket from
-  `secrets.randbelow`, so every chance is exact. `RouletteEngine` requires its
-  policy, so the configured odds can never be skipped. A client only asks to
-  spend the grant its screen offered (`next_grant_id`) and never supplies a
-  prize, type, value or balance; `RouletteService.spin` refuses any prize
-  outside the catalogue, and only the engine calls it.
-- **One transaction.** Locking the account and the grant, marking it consumed,
-  recording the spin (a snapshot of the prize) and applying the prize — ledger
-  stamps, or a `user_rewards` row pointing back at the spin — happen together.
-  A failure rolls all of it back; the spin stays available.
-- **Once per grant.** The grant is locked and `roulette_spins.grant_id` is
-  unique. `RouletteEngine.spin` requires the `grant_id`, so every request is
-  idempotent: a double tap, or the same Telegram update processed again after a
-  restart, finds the grant spent and replays its result (`created=False`). A
-  refused spin — no grant, someone else's grant — writes nothing.
-- **True values.** `RewardService.use_reward` re-checks what it records: a free
-  bottle at its product's price, a discount at exactly its percentage of the
-  order's lines and already taken off the total. `loyalty_health` reports any
-  spin whose prize is missing or does not match what was won.
-- **Real rewards.** A discount is a redeemable `user_rewards` row, used once at
-  checkout; a free bottle is the same kind of row the stamp card issues. Prize
-  display names are the locale keys `roulette.prize.<code>`.
-
-## Referral programme
-
-`ReferralProgramService` (`app/services/referral_program.py`) runs it on top of
-`ReferralService`. `ReferralPolicy` carries `REFERRAL_REWARD_STAMPS` and
-`REFERRED_USER_START_STAMPS`; `REFERRAL_SPINS` decides the referrer's spin.
-
-- **Link.** A customer's code is `secrets.token_urlsafe(9)` — 12 random
-  URL-safe characters, stored once in `loyalty_accounts.referral_code` (unique),
-  never derived from an id and never expiring. The link is Telegram's deep link
-  `https://t.me/<bot>?start=ref_<code>` (`referral_link`).
-- **Attribution.** `cmd_start` hands whatever followed `/start` to
-  `attribute_from_start`, which never raises for client input: a missing,
-  malformed (`parse_referral_payload`), unknown or own code, a customer who
-  already has a referrer, one who has ever placed an order, or a referral that
-  would close a loop anywhere up the chain is an outcome, and nothing is
-  written. Otherwise a `pending` referral is recorded — one per referred
-  customer (unique), never changed. Nothing is paid at sign-up. Attributions
-  are serialised by a PostgreSQL advisory lock held to the end of the
-  transaction, so the loop check sees every committed referral — two new
-  customers opening each other's links at once cannot refer each other. The
-  `Referral` model refuses any change to its parties or qualifying order, and
-  any step back from `qualified`.
-- **Payout.** `AdminOrderService.set_order_status` on `Completed`, after the
-  stamp award and the milestone spin, calls `settle_for_completed_order`. The
-  referred customer's first Completed, paid, post-launch order qualifies the
-  referral (the row is locked and `qualifying_order_id` is unique); then each
-  side gets its stamps — one `referral` ledger row per side, unique per
-  referral and customer — and the referrer the spin, unique per referral. It
-  shares the status change's transaction: all or nothing. A replayed
-  completion, a second order or a race pays nothing more. `loyalty_health`
-  reports any bonus booked before its referral qualified.
+can answer them and still let a plain `ValueError`, a caller bug, surface. A
+broken ledger invariant raises `LedgerInvariantError`, which is never a
+customer refusal. The services reach the database only through repositories.
 
 ## Loyalty transactions and concurrency
 
@@ -334,13 +340,10 @@ customer has ever ordered, or waits until the attribution is decided — a
 referral never lands on top of a first order in flight.
 
 **Telegram is never awaited under a loyalty lock.** Every handler commits before
-it talks to Telegram: `/start` after registration, the welcome spin and any
-attribution; 👥 Invite a Friend after creating the code; the roulette and the
-stamp card before answering; checkout and the admin status change before
-notifying. What runs after a commit only reads, without locks — referral news
-takes the referrer's link from `existing_invitation`, which never locks or
-creates. A slow Telegram never stalls another customer's attribution, or a
-payout waiting on the same account.
+it talks to Telegram (see [Transactions](#transactions)). What runs after a
+commit only reads, without locks — referral news takes the referrer's link from
+`existing_invitation`, which never locks or creates. A slow Telegram never stalls
+another customer's attribution, or a payout waiting on the same account.
 
 `tests/test_loyalty_postgres.py` races each operation in real transactions,
 `tests/test_loyalty_journeys_postgres.py` races whole updates through the
@@ -348,167 +351,49 @@ production dispatcher, and `tests/test_loyalty_concurrency.py` races the
 combinations — a first order against an attribution, a referral chain paying
 out at once, one customer under every kind of load — checks the books with
 `loyalty_health` afterwards, and fails if any Bot API call is made while a
-loyalty lock is held or shows a link to an unsaved code. All three run when
-`VSHOP_TEST_POSTGRES_URL` is set.
+loyalty lock is held. All three run when `VSHOP_TEST_POSTGRES_URL` is set; on
+every run, `tests/test_loyalty_scenarios.py` and `tests/test_loyalty_guards.py`
+check that each path requests its locks before its first write.
 
-## Routing
+## Statistics
 
-```text
-root
- ├── user router
-│   ├── /start onboarding
-│   ├── catalog / cart
-│   ├── my stamp card
-│   ├── lucky roulette
-│   ├── invite a friend
-│   ├── checkout
-│   ├── information
-│   └── /admin access-denied for non-admins
-├── admin router  (IsAdmin filter + AdminOnlyMiddleware)
-│   ├── wizard guard (block menu jumps mid-FSM)
-│   ├── products (add wizard)
-│   ├── product_manage (list / edit / delete)
-│   ├── categories
-│   ├── orders
-│   ├── broadcast
-│   ├── settings
-│   └── panel (/admin menu)
-└── fallback  (answers button taps nothing above handled; admin buttons excluded)
-```
+`StatisticsService` assembles the admin dashboard from **nine aggregate queries**
+whose count does not grow with order history — no order rows are loaded into the
+process. Month boundaries are cut in `APP_TIMEZONE` (default `Europe/Berlin`),
+so an order placed at 00:30 local on the 1st belongs to the new month even though
+it is still the previous month in UTC.
 
-## Main user flows
+Product rankings count **distinct completed orders** containing a product, not
+units sold, and cover only products that are on sale. See
+[admin-guide.md](admin-guide.md#statistics).
 
-### Onboarding
+## Reviews group
 
-`/start` → ensure user row → choose language → choose city → main reply keyboard (Catalog / Cart / My Stamp Card / Lucky Roulette / Invite a Friend / Info).
+Customers reach the private reviews group through an invite link the bot resolves
+on demand (or `REVIEW_INVITE_LINK` verbatim). The group's chat ID never appears
+in anything sent to a user. Links are cached in-process for an hour.
 
-### Catalog → cart
+## Admin services
 
-Catalog → categories → product cards → add to cart → cart (± quantity, remove) → checkout.
+`AdminService` is a backwards-compatible façade over:
 
-### Checkout (FSM)
-
-Name → delivery type (city-dependent) → address → preferred time → phone (contact share or typed) → confirmation → `OrderService.place_order_from_cart` → notify `MANAGER_CHAT_ID` + `ADMIN_IDS`.
-
-Cart row is locked with `SELECT … FOR UPDATE` during placement, then the customer's loyalty account (see [Loyalty transactions and concurrency](#loyalty-transactions-and-concurrency)); FSM `submitted` + process lock reduce double-taps.
-
-### My Stamp Card
-
-🪪 My Stamp Card (`app/handlers/user/stamp_card.py`) draws the card from
-`StampCardService.card`, in the order a customer reads it on a phone: the
-progress bar toward `LOYALTY_STAMPS_REQUIRED`; the promo directly beneath it;
-what to do next (stamps still needed, or a ready card naming the button to tap),
-extra stamps and free bottles already saved; and one italic line on how stamps
-are earned (`LOYALTY_STAMP_PURCHASE_THRESHOLD`, in the reader's money format,
-without zero cents). Every figure is a `StampCard` property — the screen
-computes nothing. Opening it is read-only, so repeats are harmless. Below the
-card, 🛍 Catalog is the next step and 🔄 Refresh redraws it in place, answering
-"up to date" when nothing changed.
-
-On a full card the backend enables 🎁 Claim Free Bottle. Its callback carries
-the card's version (latest ledger id); `StampCardService.claim_free_bottle`
-decides under the account lock, and the claim is committed — inside a
-per-customer `keyed_lock` — before the customer is told. A double tap is
-answered "already claimed" (`AlreadyClaimedError`), a card that changed
-meanwhile is redrawn (`StaleCardError`), and a malformed payload is refused
-before the database is touched. A claimed bottle is spent at checkout — see
-"Rewards at checkout" below.
-
-### Lucky Roulette
-
-🎰 Lucky Roulette (`app/handlers/user/roulette.py`) shows what the backend
-reports: the spins available, the completed orders still needed for the next one
-(`SpinEntitlementService.purchases_to_next_spin`), the prizes that can be won
-(weight above 0), one line per kind. Opening it is read-only. With a spin,
-a full-width 🎰 Spin! button carries the id of the spin on offer
-(`RouletteEngine.next_grant_id`) and nothing else — no prize, value or balance
-ever travels in a callback. Without one, 🛍 Catalog is the next step. ⬅️ Back
-closes the screen, leaving the main menu.
-
-A tap runs `RouletteEngine.spin(user_id, grant_id=…)` inside a per-customer
-`keyed_lock`: the server draws, spends the spin and books the prize in one
-transaction, committed before anything is shown. Only then comes the suspense —
-turning reels, then a drumroll, 0.8 s each, with no buttons to tap — and the
-result, read back from the saved spin and reward: the prize (a free bottle is
-the jackpot), stamps drawn on the card's own progress bar or a discount or
-bottle saved as a reward, and the spins left with 🎰 Spin again — or, with none
-left, the countdown to the next spin and 🛍 Catalog. A double tap, a stale screen or the same update delivered twice
-finds the spin played and is shown its result; an id that is not the
-customer's spends nothing and the roulette is redrawn; a malformed payload never
-reaches the database; a database failure is rolled back and the customer told
-nothing was lost — the same button retries safely. Won discounts and free
-bottles are saved rewards, spent at checkout.
-
-### Rewards at checkout
-
-The loyalty programme hangs off the two order events that already exist —
-placing an order and completing it — and no second pipeline:
-
-| Event | What happens, in the same transaction |
-|---|---|
-| Checkout confirmed (`OrderService.place_order_from_cart`) | the chosen reward is re-planned under the account and reward locks, the order is written with a €0 unit (free bottle) or a lowered total (discount), and the reward is bound to it (`RewardService.redeem`) |
-| Order completed (`AdminOrderService.set_order_status`) | stamps on the charged total (`StampCardService.award_for_order`), the every-Nth-purchase spin (`SpinEntitlementService.grant_for_completed_order`), a first order's referral payout (`ReferralProgramService.settle_for_completed_order`) |
-
-After the payment step, a customer holding a reward that fits the cart gets one
-more step: one button per reward with what it takes off this cart
-(`OrderService.reward_options` → `RewardService.options`, the same planning
-`plan` runs under lock), ➡️ Continue without a reward, and ❌ Cancel. Customers
-without one go straight to the summary, exactly as before. The callback carries
-only the reward id (`checkout:reward:<id>`), checked against the options afresh.
-The summary shows subtotal, reward and total from `OrderService.quote`; if the
-reward was used meanwhile or the cart no longer fits it, confirming rolls back,
-says so, and shows the order without it. One reward per order; the rest stay
-saved; a reward on an order later cancelled stays used (owner decision).
-
-The redemption is on the record for staff: `Order.reward` (read-only, loaded
-with the order) adds a "Reward used" line to the manager's new-order alert and
-the admin order card.
-
-### Invite a Friend
-
-👥 Invite a Friend (`app/handlers/user/invite.py`) shows, all from
-`ReferralProgramService.invitation`: the offer (each side's stamps and the
-referrer's spin, as configured); how it works in three steps (a friend who has
-never ordered opens the link and orders, and the rewards land when that first
-order completes); the personal link (`https://t.me/<bot>?start=ref_<code>` — the
-bot's username from the cached `getMe`, the random code created on the first
-visit and stable after); and the friends who joined, were rewarded or are still
-waiting. The link sits in `<code>`, so a tap copies it; 📤 Send to a friend opens
-Telegram's own share sheet (`https://t.me/share/url`) with a message naming the
-friend's bonus, 📋 Copy link is a `copy_text` button, and ⬅️ Back closes the
-screen. No id appears anywhere, and the screen's only callback closes it. Stamp
-counts go through `LocalizationService.plural` (the CLDR forms under
-`invite.stamps.*`), since the amounts are configurable. The first visit creates
-the code under the customer's account lock, and the handler commits before
-sending the screen: a link never names a code that is not saved, and no lock is
-held while Telegram answers.
-
-`ReferralNotificationService` (`app/services/referral_notification.py`) closes
-the loop. The referrer hears when a friend joins (last in `/start`, after the
-attribution is committed), and both sides hear when the payout lands (last in
-the admin status change, after its commit; the amounts are read back from the
-ledger by `ReferralProgramService.payout_for_order`). The referrer's messages
-carry the 📤 button for the next invite, its link read by `existing_invitation`,
-which neither locks nor creates. No message names the other side, and
-failures are logged and swallowed. The newcomer's own `/start` replies stay
-identical whatever the code, so nothing tells a guesser that a code was real;
-only a customer opening their own link — who owns the code — is told it works.
-
-## Admin services (SOLID split)
-
-`AdminService` is a façade over:
-
-- `AdminCatalogService` — categories & products
-- `AdminOrderService` — order queries & status
+- `AdminCatalogService` — categories, brands and products
+- `AdminOrderService` — order queries and status changes (including the
+  loyalty booking on completion)
 - `AdminUserService` — broadcast recipient IDs
 
-Handlers may use the façade or focused services.
+The status-change handler builds `AdminService(session, settings=settings)`, so
+completion applies the configured loyalty rules; `tests/test_stamp_card.py` pins
+that. New code uses the focused services.
 
 ## Localization
 
 - Files: `app/locales/{en,ru,de,uk}.json` — four languages, identical key sets
 - Keys flattened to dotted paths (`menu.catalog`)
-- `LocalizationService.t(key, **kwargs)` formats strings
+- `LocalizationService.t(key, **kwargs)` formats strings; the key is
+  positional-only, so a placeholder may be named anything, `{language}` included
+- `LocalizationService.plural(key, count)` picks the CLDR plural form (Russian
+  and Ukrainian: one / few / many; English and German: one / other)
 - Menu buttons matched via `LocalizedText` against all language variants
 - Product names/descriptions are per-language **columns**, resolved by
   `app/utils/product_display.py` — distinct from the locale catalogs
@@ -520,7 +405,8 @@ Every **customer-facing** string goes through `i18n.t()`. Enforced by
 missing, if the catalogs drift apart, if a handler/keyboard passes a literal
 string to Telegram, or if handlers, keyboards, services, error paths or display
 helpers write a sentence in code (`NOT_SHOWN` lists the few literals no customer
-sees).
+sees). `tests/test_localization.py` renders every template in every language with
+its placeholders filled.
 
 `tests/test_localization_quality.py` keeps each language one voice. Customers
 are addressed formally everywhere — German "Sie" — and the one informal text is
@@ -531,7 +417,9 @@ features use one word per concept (stamp, reward, spin, free bottle) in each
 language; plural families are complete; money in loyalty texts comes from
 `format_amount`. An ordinal that agrees with its noun — the stamp card's "11th
 bottle" — is rendered by `feminine_accusative_ordinal` (`app/utils/i18n.py`), so
-any configured card size reads right.
+any configured card size reads right. `tests/test_loyalty_languages.py` walks the
+whole customer journey in each language and checks that every screen fits a
+phone.
 
 **Documented exception — the manager/ops order alert.**
 `app/services/notification.py` builds its field labels in English on purpose, and
@@ -545,15 +433,47 @@ present. Customer-facing city/delivery labels use the localized
 
 ## Concurrency & caching
 
-- Process-local `keyed_lock` for confirm actions (checkout, broadcast, product create/edit)
-- Loyalty: row locks, unique constraints and one lock order — see [Loyalty transactions and concurrency](#loyalty-transactions-and-concurrency)
-- Category list TTL cache (`app/utils/cache.py`), invalidated on category mutations
+- Process-local `keyed_lock` for confirm actions (checkout, stamp claim, roulette,
+  broadcast, product create/edit via `confirm_once`)
+- Loyalty: row locks, unique constraints and one lock order — see
+  [Loyalty transactions and concurrency](#loyalty-transactions-and-concurrency)
+- Category list TTL cache (`app/utils/cache.py`, 60 s), invalidated on every
+  category mutation
 - FSM: `MemoryStorage` (single process)
 
-## Error UX
+## Error handling
 
-Exceptions are classified (`telegram` / `database` / `network` / `unexpected`). Users only see localized generic messages — never stack traces or raw DB errors.
+Exceptions are classified (`telegram` / `database` / `network` / `unexpected`) in
+`app/errors/classify.py`. Users only see localized generic messages — never stack
+traces or raw database errors; the details stay in the log.
+
+## Startup and shutdown
+
+`app/main.py` builds the bot (HTML parse mode by default) and the dispatcher
+(`MemoryStorage`), then starts long polling. `on_startup` (`app/lifecycle.py`)
+initializes the engine, checks connectivity, logs the database identity, runs the
+idempotent loyalty activation, deletes any webhook dropping pending updates, and
+calls `getMe`. The full sequence and restart behaviour are in
+[Deployment](deployment.md#health-expectations).
 
 ## Testing
 
-`tests/` uses pytest-asyncio and in-memory SQLite. Factories seed users/products/orders. See `tests/conftest.py`.
+Unit, integration, end-to-end (real updates through the production dispatcher),
+PostgreSQL concurrency, migration, security, localization and documentation
+tests — see [Testing](testing.md).
+
+## Design decisions and trade-offs
+
+| Decision | Why | Cost |
+|---|---|---|
+| Long polling, not webhooks | no inbound port, TLS endpoint or webhook secret to operate | one process per bot token |
+| `MemoryStorage` FSM, process-local locks and cache | simple, fast, no extra infrastructure | a single bot instance; FSM state is lost on restart |
+| READ COMMITTED + row locks + unique constraints | no serialization failures to retry; every operation idempotent | the lock order must be respected by every new path (tests check it) |
+| Loyalty booked inside the order's own transactions | status and rewards can never disagree; no background jobs | the admin's status tap does a little more work |
+| Stamp ledger as the source of truth, balance as a cache | every balance is explainable and auditable | two writes per movement |
+| Server-side draw (`secrets.randbelow`), prizes in code, weights in configuration | odds are exact and cannot be influenced by a client | changing a prize needs a code change |
+| Expand/contract migrations; upgrades never drop | a deploy can never destroy data | legacy columns linger until a contract migration |
+| External, required database volume | a deploy cannot attach to an empty database by accident | one extra setup step per deployment |
+| Enums stored by value as `VARCHAR` | adding a value needs no migration | the database does not constrain plain enum columns |
+| English manager alerts | one shared chat, one parseable format | not localized |
+| Documentation facts pinned by tests | docs cannot silently drift from code | docs change together with the code |

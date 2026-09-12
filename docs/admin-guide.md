@@ -1,26 +1,40 @@
 # Admin guide
 
-Admin features are available only to Telegram user IDs listed in `ADMIN_IDS`.
+The whole shop is operated from inside Telegram. Admin features are available
+only in a **private chat** with the bot, and only to Telegram user IDs listed in
+`ADMIN_IDS`.
 
 ## Access
 
-1. Ensure your numeric Telegram ID is in `.env` → `ADMIN_IDS`.
-2. Restart the bot if you changed env vars.
+1. Put your numeric Telegram ID in `.env` → `ADMIN_IDS` (several are
+   comma-separated).
+2. Apply it: `docker compose up -d` (or restart the process).
 3. Send `/admin` to the bot.
 
-Authorized users get the admin reply keyboard:
+The admin panel keyboard:
 
 | Button | Section |
 |---|---|
-| Products | Add / manage catalog products |
-| Categories | Create / rename / delete / reorder |
-| Orders | View, search, change status |
-| Broadcast | Message all registered users |
-| Settings | Admin settings entry |
+| 📦 Products | add products; list, edit, enable/disable, delete |
+| 📂 Categories | categories and their brands |
+| 📋 Orders | new and completed orders, search, status changes |
+| 📢 Broadcast | message every registered customer |
+| 📊 Statistics | orders, revenue and product rankings |
+| ⚙ Settings | informational placeholder — configuration is done through environment variables |
 
-Non-admins who send `/admin` receive an access-denied message and never see admin controls.
+**Authorization model.** The admin router is gated twice: `IsAdmin` filters and
+`AdminOnlyMiddleware`, which drops any update from a non-admin silently and logs
+a warning. A non-admin who sends `/admin` receives an access-denied message and
+never sees admin controls; a stranger's tap on an admin button is ignored. An
+empty `ADMIN_IDS` means nobody has admin access. Group chats are ignored entirely.
 
-While a wizard is active (add product, rename category, broadcast, etc.), tapping another admin menu button is blocked until you **Cancel** or finish the flow.
+**Wizards.** While a wizard is active (adding a product, renaming a category, a
+broadcast, …), tapping another admin menu button is blocked until you **Cancel**
+or finish the flow. Wizard state is kept in memory: after a bot restart, start
+the flow again.
+
+Admin screens are shown in the admin's own language (chosen at `/start`, like any
+customer). New-order alerts are the exception — they are English by design.
 
 ---
 
@@ -28,29 +42,151 @@ While a wizard is active (add product, rename category, broadcast, etc.), tappin
 
 ### Add product
 
-1. **Products** → **Add product**
-2. Send a **photo** (required for new products in the wizard)
-3. Enter names: RU → EN → DE
-4. Enter descriptions: RU → EN → DE
-5. Pick a **category** (create categories first if the list is empty)
-6. Enter flavor, volume, nicotine strength, price
-7. Review the preview → **Confirm**
+📦 Products → **Add product**:
 
-Prices use decimal format (`12.50`). Scientific notation is rejected.
+1. Send a **photo** (required).
+2. Enter the name in Russian, English, German and Ukrainian — each at most 255
+   characters.
+3. Enter the description in the same four languages.
+4. Pick a **category**, then a **brand** within it. A category without brands
+   stops the wizard: create a brand first (see [Brands](#brands)).
+5. Enter flavor (at most 255 characters), volume and nicotine strength (at most 64
+   each).
+6. Enter the **price**: digits with up to two decimals, `12.50` or `12,50`,
+   between 0.01 and 99,999,999.99. Scientific notation is rejected.
+7. Review the preview → **Confirm**. A double tap on Confirm creates the product
+   once.
 
 ### Manage products
 
-1. **Products** → **Manage** (paginated list)
-2. Open a product card
+📦 Products → **Manage** opens a paginated list; open a product card for:
 
-Actions:
+- **Edit** — the full wizard: photo, names and descriptions in all four languages,
+  category, brand, flavor, volume, nicotine, price. **Skip** keeps the current
+  value of a step.
+- **Edit price** — the price only.
+- **Edit description** — Russian, English and German. The Ukrainian description
+  is changed through **Edit**.
+- **Enable** / **Disable** — shows or hides the product in the catalog
+  (`is_active`).
+- **Delete** — asks for confirmation, and is refused if the product appears in
+  any order: order history must stay readable.
 
-- **Edit** — full edit wizard; **Skip** keeps the current value for a step
-- **Edit price** / **Edit description** — focused flows
-- **Enable** / **Disable** — catalog visibility (`is_active`)
-- **Delete** — confirmation required; blocked if the product appears in any order history
+Product images are stored as Telegram `file_id`s of the uploaded photo.
 
-Product images use Telegram `file_id` from the uploaded photo.
+---
+
+## Categories and brands
+
+The catalog has three levels: **category → brand → product**.
+
+### Categories
+
+📂 Categories lists the categories in their display order.
+
+- **Create** — enter the name in Russian, English, German and Ukrainian. The
+  Russian name must be unique.
+- Open a category to **edit a name** (pick the language), **activate /
+  deactivate** it, **move it up / down** (the order customers see), open its
+  **brands**, or **delete** it. Deleting asks for confirmation and is refused
+  while the category still has brands or products.
+
+### Brands
+
+From a category, open its brands to:
+
+- **create** a brand (four localized names);
+- **edit a name** in one language;
+- **activate / deactivate** it;
+- **move it up / down**;
+- **move it to another category**;
+- **delete** it — refused while it still has products.
+
+### What "on sale" means
+
+A product is on sale only when **all three** are active: the product, its
+category, and — if it has one — its brand. Disabling a category or a brand
+therefore takes every product under it off the shelf without touching the
+product rows, and re-enabling puts them straight back.
+
+The rule is defined once, in `app/repositories/visibility.py`, and applies
+everywhere the question is asked: catalog browsing, the checkout guard (an item
+that went off sale while sitting in a cart is refused), and the statistics
+top/bottom product rankings. Products created before the category → brand →
+product hierarchy carry no brand and are judged on their category alone.
+
+---
+
+## Orders
+
+📋 Orders offers **New orders** and **Completed orders** (both paginated) and
+**Search**:
+
+- an order number finds that order;
+- any other text searches customer names and phone numbers (substring,
+  case-insensitive).
+
+The order card shows the status, date, customer name, Telegram username and ID,
+city, delivery method, address, preferred time, phone, payment method, items and
+total. When a loyalty reward was used, a **Reward used** line appears under the
+items: a free bottle is the item listed at 0.00, and a discount is already taken
+off the total — **charge the total shown**.
+
+### Changing status
+
+Only the moves allowed from the current status are offered:
+
+| Current status | Buttons |
+|---|---|
+| `New` | 👍 Accept · ❌ Cancel order |
+| `Accepted` | 📦 Ship · ❌ Cancel order |
+| `Shipped` | ✅ Complete · ❌ Cancel order |
+| `Completed` | none — terminal |
+| `Cancelled` | ↩️ Reopen order (back to `New`) |
+
+- The customer is told about `Accepted`, `Shipped`, `Completed` and `Cancelled`,
+  in their own language. Reopening a cancelled order is an internal correction
+  and sends nothing.
+- **Completing** an order books the customer's loyalty stamps, any roulette spin
+  it earns, and a first order's referral bonus — automatically, in the same step.
+- A button from an outdated screen that asks for an illegal move is refused, and
+  the card is redrawn with the current status. Two admins tapping at the same
+  moment move the order once, and the customer is told once.
+
+New orders notify `MANAGER_CHAT_ID` (a group or a private chat) and each chat in
+`ADMIN_IDS`, without duplicates. These alerts are English and carry no buttons.
+
+---
+
+## Loyalty
+
+There is nothing to operate by hand:
+
+- stamps, milestone roulette spins and referral payouts are booked when an order
+  is marked **Completed**;
+- customers claim free bottles on 🪪 My Stamp Card and choose rewards at
+  checkout;
+- a reward used on an order that is later cancelled stays used (owner decision).
+
+There is **no admin screen** for loyalty balances, manual stamp adjustments or
+loyalty settings. The rules are configured through environment variables (see
+[Configuration](configuration.md#loyalty-stamp-card)), and
+`python -m app.verify_deployment` reports the loyalty integrity checks. How the
+programme works: [Loyalty](loyalty.md), [Roulette](roulette.md),
+[Referrals](referrals.md).
+
+---
+
+## Broadcast
+
+1. 📢 Broadcast shows the number of recipients; start a new broadcast.
+2. Send **text**, or a **photo** with an optional caption.
+3. Review the preview.
+4. **Confirm** to send.
+
+Progress updates appear as the fan-out runs. Sending is paced, and Telegram's
+`RetryAfter` responses are honoured, to avoid flood errors. Failed recipients are
+summarized at the end. A double tap on Confirm sends once.
 
 ---
 
@@ -85,8 +221,7 @@ in English, `1.234,56 €` in German, `1 234,56 €` in Russian and Ukrainian. T
 symbol itself comes from `CURRENCY_SYMBOL`.
 
 Product names longer than 26 characters are trimmed at the nearest word with an
-ellipsis, so a ranked list stays one line per entry. Without that a single long
-name wraps to three rows and the numbering stops reading as a list.
+ellipsis, so a ranked list stays one line per entry.
 
 `🔄 Refresh` redraws in place. If nothing has changed since the last tap the
 message stays as it is — Telegram rejects an unchanged edit, and that is not an
@@ -96,84 +231,34 @@ Empty states are distinct on purpose: an empty catalog says there are no
 products, while a stocked catalog with no completed sales says nothing has sold
 yet.
 
-### What "on sale" means
-
-A product is on sale only when **all three** are active: the product, its
-category, and — if it has one — its subcategory. Disabling a category or a
-subcategory therefore takes every product under it off the shelf without
-touching the product rows, and re-enabling puts them straight back.
-
-The rule is defined once, in `app/repositories/visibility.py`, and applies
-everywhere the question is asked: catalog browsing, the checkout guard (an item
-that went off sale while sitting in a cart is refused), and the statistics
-top/bottom product rankings. A product a customer cannot buy never appears in
-the best- or worst-seller lists, because "not selling" and "not on sale" are
-different problems.
-
-Products created before the category → subcategory → product hierarchy carry no
-subcategory. They are judged on their category alone.
-
 ---
 
-## Categories
+## Settings
 
-1. Open **Categories**
-2. **Create** — enter a unique-enough display name (sorted by `sort_order`)
-3. Open a category to:
-   - **Rename**
-   - **Delete** (blocked if it still has products)
-   - **Move up / down** — changes display order in the customer catalog
-
-Create at least one category before adding products.
-
----
-
-## Orders
-
-1. Open **Orders**
-2. View **New** or **Completed** lists (paginated)
-3. Open an order for the full card (customer, items, totals, contacts). An order
-   paid partly with a loyalty reward shows a **Reward used** line under the items:
-   a free bottle is the item listed at 0.00, a discount is already off the total —
-   charge the total shown
-4. Completing an order books the customer's stamps, any roulette spin it earns and
-   a first order's referral bonus automatically — there is nothing to do by hand
-4. Change status: **New** → **Accepted** → **Completed**, or **Cancelled**
-5. **Search** by order ID, customer name, or phone
-
-New orders also notify:
-
-- `MANAGER_CHAT_ID` (group or private)
-- Each ID in `ADMIN_IDS` (private), excluding duplicates
-
----
-
-## Broadcast
-
-1. Open **Broadcast**
-2. Compose **text** and/or send a **photo** (caption optional)
-3. Review the preview (recipient count shown)
-4. **Confirm** to send
-
-Progress updates appear as the fan-out runs. Soft rate limiting and `RetryAfter` handling reduce Telegram flood errors. Failed recipient IDs are summarized at the end.
-
-Do not double-tap Confirm; the bot serializes broadcast confirms per admin.
+⚙ Settings currently shows an informational message only. Every setting — admin
+IDs, notification chats, loyalty rules, roulette weights — is an environment
+variable; see [Configuration](configuration.md).
 
 ---
 
 ## Customer-facing reminder
 
-After catalog/product changes:
+After catalog changes:
 
-- Disabled products disappear from the customer catalog
-- Category order matches admin reorder
-- Cart lines for deleted products are removed (delete only succeeds when not used in orders)
+- disabled products, and products under a disabled category or brand, disappear
+  from the customer catalog;
+- category and brand order follows the admin's ordering;
+- cart lines for deleted products are removed (a delete only succeeds when the
+  product is in no order).
 
 ---
 
 ## Operational tips
 
-- Keep `ADMIN_IDS` small and trusted — admins can broadcast to every user.
+- Keep `ADMIN_IDS` small and trusted — admins can broadcast to every customer.
 - Use a dedicated manager group for `MANAGER_CHAT_ID` so order alerts are shared.
-- If the bot restarts mid-wizard, ask the admin to `/admin` again and restart the flow (FSM is in-memory).
-- For TLS interception on a corporate network during local testing only, see `TELEGRAM_SSL_VERIFY` in [Configuration](configuration.md).
+- If the bot restarts mid-wizard, send `/admin` again and restart the flow (FSM
+  state is in memory).
+- If order alerts stop arriving after changing group settings, the group may have
+  become a supergroup with a new ID — see
+  [Deployment](deployment.md#order-notifications-stop-arriving-in-the-manager-group).

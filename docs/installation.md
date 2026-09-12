@@ -4,6 +4,7 @@
 
 - Python **3.13+**
 - PostgreSQL **16** (local or Docker)
+- Docker with the Compose v2 plugin (`docker compose`) for Option A
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - Your Telegram user ID (for `ADMIN_IDS`) — e.g. via [@userinfobot](https://t.me/userinfobot)
 
@@ -115,7 +116,10 @@ pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
 
-Tests use in-memory SQLite and do not require PostgreSQL or a bot token.
+Tests use in-memory SQLite and do not require PostgreSQL or a bot token. The
+PostgreSQL concurrency and deployment suites skip unless
+`VSHOP_TEST_POSTGRES_URL` names a scratch database — see [Testing](testing.md)
+for those, the quality gate, and what each test layer covers.
 
 ## Troubleshooting
 

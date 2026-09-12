@@ -3,14 +3,28 @@
 Settings are loaded from environment variables and optional `.env` via Pydantic Settings (`app/config.py`).
 
 Never commit real secrets. `.env` is gitignored; use `.env.example` as a template.
+It contains placeholders only.
+
+## Where each variable is used
+
+| Group | Read by | Environments |
+|---|---|---|
+| Application settings — every variable in this document except the two sections below | the bot process through `app/config.py`: `python -m app.main`, `alembic`, `python -m app.check_startup`, `python -m app.verify_deployment` | host runs and the `bot` container |
+| [Docker Compose extras](#docker-compose-extras) — `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`, `POSTGRES_VOLUME_NAME` | `docker-compose.yml` only | Docker Compose |
+| [Test-only variables](#test-only-variables) — `VSHOP_TEST_POSTGRES_URL`, `VSHOP_TEST_NO_SKIPS` | the test suite only | developer machines, release verification |
+
+A real environment variable outranks `.env`; under Compose, the service's
+`environment:` block outranks `env_file:` — see
+[`DATABASE_URL` precedence](#database_url-precedence). An invalid value stops the
+bot at startup with a validation error rather than failing later.
 
 ## Required variables
 
-| Variable | Type | Description |
-|---|---|---|
-| `BOT_TOKEN` | string | Telegram Bot API token from BotFather |
-| `DATABASE_URL` | string | Async SQLAlchemy URL, e.g. `postgresql+asyncpg://user:pass@host:5432/dbname` |
-| `MANAGER_CHAT_ID` | int | Chat ID for new-order notifications (private user or group/supergroup) |
+| Variable | Type | Example | Description |
+|---|---|---|---|
+| `BOT_TOKEN` | string | `123456789:AAE…` | Telegram Bot API token from [@BotFather](https://t.me/BotFather). The `.env.example` placeholder is rejected at startup |
+| `DATABASE_URL` | string | `postgresql+asyncpg://vshop:vshop@localhost:5432/vshop` | Async SQLAlchemy URL for host runs. Under Docker Compose it is replaced by the internal `db:5432` address |
+| `MANAGER_CHAT_ID` | int | `-1001234567890` (group) or `123456789` (private) | Chat that receives new-order notifications |
 
 ## Authorization
 
@@ -203,7 +217,9 @@ silently create a new, empty volume — the incident that made the catalog
 
 ```env
 BOT_TOKEN=123456:AA...
-DATABASE_URL=postgresql+asyncpg://vshop:vshop@db:5432/vshop
+# Required by the settings; Compose replaces it with db:5432 inside the container
+DATABASE_URL=postgresql+asyncpg://vshop:vshop@localhost:5432/vshop
+POSTGRES_VOLUME_NAME=vshop_pgdata      # after: docker volume create vshop_pgdata
 ADMIN_IDS=123456789
 MANAGER_CHAT_ID=123456789
 APP_ENV=development
@@ -216,12 +232,23 @@ TELEGRAM_SSL_VERIFY=true
 ```env
 BOT_TOKEN=123456:AA...
 DATABASE_URL=postgresql+asyncpg://vshop:vshop@localhost:5432/vshop
+POSTGRES_VOLUME_NAME=vshop_pgdata      # the Compose `db` service needs it too
 ADMIN_IDS=123456789
 MANAGER_CHAT_ID=-1001234567890
 APP_ENV=development
 LOG_LEVEL=DEBUG
 TELEGRAM_SSL_VERIFY=true
 ```
+
+## Test-only variables
+
+Read by the test suite, never by the bot — see
+[Testing](testing.md#postgresql-suites).
+
+| Variable | Description |
+|---|---|
+| `VSHOP_TEST_POSTGRES_URL` | Async URL of an **empty** scratch database whose name ends in `_test`; enables the PostgreSQL concurrency and deployment suites, which create and drop the schema. Never a production database |
+| `VSHOP_TEST_NO_SKIPS` | `1` makes any skipped test fail the session — for release verification |
 
 ## Finding chat IDs
 

@@ -6,8 +6,39 @@ The repository ships a production-oriented Compose stack:
 
 | Service | Role |
 |---|---|
-| `db` | PostgreSQL 16 Alpine, named volume `pgdata`, healthcheck |
-| `bot` | App image; migrates then runs `python -m app.main` |
+| `db` | PostgreSQL 16 Alpine (`vshop-db`), data on the external volume, healthcheck, published on `127.0.0.1` only |
+| `bot` | App image (`vshop-bot`); waits for a healthy `db`, runs `alembic upgrade head`, then `python -m app.main` |
+
+```mermaid
+flowchart LR
+    subgraph Host["Docker host"]
+        subgraph Stack["Compose project: vshop"]
+            BOT["vshop-bot: alembic upgrade head, then python -m app.main"]
+            DB[("vshop-db: PostgreSQL 16")]
+        end
+        VOL[("External Docker volume named by POSTGRES_VOLUME_NAME")]
+    end
+    TG["api.telegram.org"]
+    BOT -->|"db:5432 on the Compose network"| DB
+    DB -->|"/var/lib/postgresql/data"| VOL
+    BOT -->|"HTTPS long polling, outbound only"| TG
+```
+
+### Where the data lives
+
+All shop and loyalty data lives in PostgreSQL's data directory, which is the
+external Docker volume named by `POSTGRES_VOLUME_NAME`. Containers and images
+are disposable: rebuilding the image, recreating or restarting either container
+and applying migrations all leave the volume untouched. Compose never creates,
+renames or deletes that volume, so a deploy either attaches to the volume you
+named or refuses to start.
+
+This release's persistence behaviour was rehearsed on a scratch stack holding
+seeded data — populate, run, restart, migrate, rebuild the image, redeploy,
+restart. The catalog and orders were byte-identical at every step, the loyalty
+rows were identical across the rebuild and redeploy, and the PostgreSQL
+`system_identifier` never changed. The routine to repeat after every deploy is in
+[Verifying a deploy](#verifying-a-deploy).
 
 ### Deploy steps
 
@@ -478,6 +509,16 @@ Set the same value as `POSTGRES_PASSWORD` in `.env`, then
 `docker compose up -d`. Starting a **new** volume is the other option, and it
 discards the existing database — see [Destructive operations](#destructive-operations).
 
+## CI/CD
+
+There is **no hosted CI/CD pipeline**: nothing runs automatically on push, and
+deployment is the manual Compose procedure above, run on the host. Before a
+deploy, the release gate is run locally from a clean checkout — formatting, lint,
+strict typing, the full test suite including the PostgreSQL suites with
+`VSHOP_TEST_NO_SKIPS=1`, a migration round trip ending in `alembic check`, the
+package build and a `--no-cache` image build. The commands are in
+[Testing](testing.md#quality-gate).
+
 ## Production checklist
 
 - [ ] Real `BOT_TOKEN` (never the `.env.example` placeholder)
@@ -510,21 +551,24 @@ For multiple workers, introduce Redis (or similar) FSM storage and shared lockin
 
 ## Health expectations
 
-On startup the app:
+Under Compose the container runs `alembic upgrade head && python -m app.main`.
+The process then:
 
-1. Configures logging
-2. Initializes the DB engine and checks `SELECT 1`
-3. Logs the database identity (URL, `system_identifier`, row counts) — read-only
-4. Brings existing customers into the loyalty programme: opens any missing
-   loyalty account and grants any missing welcome spin
-5. Creates the bot/dispatcher
-6. Calls Telegram `getMe` (startup check)
-7. Begins long polling
+1. Configures logging and builds the bot and the dispatcher (`app/main.py`).
+2. Starts long polling, which first runs `on_startup` (`app/lifecycle.py`):
+   1. initializes the DB engine and checks `SELECT 1`;
+   2. logs the database identity (URL with the password masked,
+      `system_identifier`, row counts) — read-only;
+   3. brings existing customers into the loyalty programme: opens any missing
+      loyalty account and grants any missing welcome spin;
+   4. deletes any webhook with `drop_pending_updates=True`;
+   5. calls Telegram `getMe`.
+3. Polls for updates.
 
-Step 3 never writes and never blocks startup: if the probe fails it is logged at
-`DEBUG` and the bot continues.
+The identity probe (2.2) never writes and never blocks startup: if it fails it is
+logged at `DEBUG` and the bot continues.
 
-Step 4 (`activate_loyalty` → `LoyaltyActivationService.activate_everyone`) is
+The loyalty activation (2.3, `activate_loyalty` → `LoyaltyActivationService.activate_everyone`) is
 the loyalty backfill for existing users, and is safe on every start, restart and
 redeploy: each row type is one `INSERT … SELECT … ON CONFLICT DO NOTHING` over
 the users missing it, behind a unique constraint (`loyalty_accounts.user_id`;
@@ -539,6 +583,24 @@ backfill once at launch; this step catches up anyone registered or left behind
 since.
 
 If DB or token checks fail, the process exits non-zero (Compose will restart if `restart: unless-stopped`).
+
+`python -m app.check_startup` runs the same startup without entering the polling
+loop and exits `0` (ok), `1` (failure), `2` (a bad or placeholder `BOT_TOKEN`)
+or `3` (Telegram API error). Note that with a real token it performs step 2.4 as
+well.
+
+### Restart behaviour
+
+- Both containers use `restart: unless-stopped`: a crashed bot is restarted by
+  Docker, and `alembic upgrade head` runs again as a no-op.
+- No restart touches the data — see
+  [What preserves data](#what-preserves-data-and-what-destroys-it).
+- Messages and button taps sent while the bot was down are **discarded** at the
+  next start, because step 2.4 drops pending updates. Customers repeat the action.
+- FSM state lives in memory (`MemoryStorage`), so a checkout or an admin wizard
+  in progress is lost on restart. A button from before the restart is answered
+  "this button is no longer valid" by the fallback router instead of hanging.
+- The loyalty activation runs on every start and adds nothing the second time.
 
 ## Reverse proxy / webhooks
 

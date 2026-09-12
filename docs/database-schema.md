@@ -22,15 +22,24 @@ alembic downgrade -1
 
 ## Entity relationship
 
-```text
-users 1──1 carts 1──* cart_items *──1 products
-  │                              ▲
-  │                              │
-  └──* orders 1──* order_items ──┘
+Core shop tables (the loyalty tables follow in [Loyalty](#loyalty)):
 
-categories 1──* subcategories 1──* products      ← current hierarchy
-categories 1──────────────────* products         ← legacy link, retained
+```mermaid
+erDiagram
+    USERS ||--o| CARTS : "has one"
+    CARTS ||--o{ CART_ITEMS : contains
+    PRODUCTS ||--o{ CART_ITEMS : "added as"
+    USERS ||--o{ ORDERS : places
+    ORDERS ||--|{ ORDER_ITEMS : contains
+    PRODUCTS ||--o{ ORDER_ITEMS : "ordered as"
+    CATEGORIES ||--o{ SUBCATEGORIES : groups
+    SUBCATEGORIES |o--o{ PRODUCTS : "brand of"
+    CATEGORIES ||--o{ PRODUCTS : "legacy direct link"
 ```
+
+`categories → subcategories → products` is the current hierarchy; the direct
+`categories → products` link is retained from the pre-hierarchy schema (see
+below).
 
 ## Catalog hierarchy
 
@@ -177,12 +186,24 @@ Persistence for the stamp card, the roulette and the referral programme
 (`3b9d6f2a8c14`). Six tables; every foreign key is `ON DELETE RESTRICT`, so
 loyalty history is never cascade-deleted.
 
-```text
-users 1──1 loyalty_accounts
-users 1──* loyalty_transactions ──► orders | referrals | roulette_spins | user_rewards
-users 1──* roulette_spin_grants 1──0..1 roulette_spins 1──0..1 user_rewards
-users 1──* user_rewards ──0..1 orders           ← the order a reward was used on
-users 1──* referrals (as referrer) · users 1──0..1 referrals (as referred)
+```mermaid
+erDiagram
+    USERS ||--o| LOYALTY_ACCOUNTS : "has one"
+    USERS ||--o{ LOYALTY_TRANSACTIONS : "stamp ledger"
+    ORDERS ||--o| LOYALTY_TRANSACTIONS : "purchase stamps"
+    REFERRALS ||--o{ LOYALTY_TRANSACTIONS : "referral bonus, one per side"
+    ROULETTE_SPINS ||--o| LOYALTY_TRANSACTIONS : "stamp prize"
+    USER_REWARDS ||--o| LOYALTY_TRANSACTIONS : "stamp-card redemption"
+    USERS ||--o{ ROULETTE_SPIN_GRANTS : "entitled to"
+    ORDERS ||--o| ROULETTE_SPIN_GRANTS : "milestone spin"
+    REFERRALS ||--o| ROULETTE_SPIN_GRANTS : "referral spin"
+    ROULETTE_SPIN_GRANTS ||--o| ROULETTE_SPINS : "spent as"
+    ROULETTE_SPINS ||--o| USER_REWARDS : "reward prize"
+    USERS ||--o{ USER_REWARDS : holds
+    ORDERS ||--o| USER_REWARDS : "redeemed on"
+    USERS ||--o{ REFERRALS : refers
+    USERS ||--o| REFERRALS : "was referred"
+    ORDERS ||--o| REFERRALS : qualifies
 ```
 
 Two rules hold the design together:
@@ -367,6 +388,42 @@ New ──► Accepted ──► Shipped ──► Completed   (terminal)
   `RESTRICT`, and `users` / `orders` rows referenced by them cannot be deleted.
 - A stamp balance can never go negative, and every ledger row carries exactly the
   source reference its `kind` requires — both enforced by CHECK constraints.
+
+## Transactions and consistency
+
+- **One transaction per Telegram update.** `DatabaseMiddleware` commits when the
+  handler succeeds and rolls back on any exception. Handlers commit earlier only
+  where a Telegram message must follow a durable write — placing an order, an
+  admin status change, a stamp claim, a roulette spin, `/start`, the invite
+  screen, a broadcast; see [Architecture](architecture.md#transactions).
+- **READ COMMITTED plus locks.** PostgreSQL runs at its default isolation level.
+  Loyalty correctness comes from row locks (`SELECT … FOR UPDATE`) taken in one
+  global order and from the unique constraints listed above, not from a stricter
+  level; see
+  [Loyalty transactions and concurrency](architecture.md#loyalty-transactions-and-concurrency).
+- **Rewards share the order's transaction.** Completing an order books its
+  stamps, milestone spin and referral payout in the status change's own
+  transaction; redeeming a reward happens in the transaction that writes the
+  order. Status and rewards become durable together or not at all.
+- **Money** is `numeric(10,2)` in the database and `Decimal` in Python; floats
+  are refused.
+
+## Auditability
+
+Every loyalty balance and reward can be traced to the event that caused it:
+
+| Question | Answered by |
+|---|---|
+| Why does a customer have N stamps? | `loyalty_transactions`: one row per movement, with its `kind`, signed `amount`, `balance_after` and source reference |
+| Where did a spin come from? | `roulette_spin_grants.reason`, plus `order_id` or `referral_id` |
+| What did a spin win? | `roulette_spins` stores a prize snapshot (`prize_code`, `prize_type`, `prize_value`), so later weight or catalogue changes never rewrite history |
+| What was a reward worth, and what did it pay for? | `user_rewards.discount_amount`, `redeemed_product_id`, `order_id`, `used_at` |
+| Who referred whom, and which order paid it out? | `referrals` — parties immutable, `qualifying_order_id` and `qualified_at` set once |
+
+Loyalty rows are never cascade-deleted. `python -m app.verify_deployment`
+recomputes the cached balances and purchase counts from the ledger and
+cross-checks rewards, spins and referrals against the orders they name; every
+counter must be `0` — see [Deployment](deployment.md#verifying-a-deploy).
 
 ## Migrations
 
