@@ -44,6 +44,38 @@ Empty `ADMIN_IDS` fail-closes: nobody gets the admin panel.
 
 Admin IDs also receive new-order notifications in private chat (deduplicated with `MANAGER_CHAT_ID`).
 
+## Emergency admin access
+
+Break-glass access for an operator whose Telegram ID is *not* in `ADMIN_IDS`.
+All optional; the feature is **off** until the hash is set.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `EMERGENCY_ADMIN_PASSWORD_HASH` | string | unset | scrypt hash of the emergency password, `scrypt:ln=…,r=…,p=…:salt:digest` — colons rather than the PHC `$`, which Docker Compose would expand as variables inside `.env`. Never the password itself. A malformed value stops the bot at startup |
+| `EMERGENCY_ADMIN_SESSION_TTL_MINUTES` | int | `30` | How long a session lasts, `1`–`720`. A session is never extended; logging in again opens a new one and revokes the old |
+| `EMERGENCY_ADMIN_MAX_FAILED_ATTEMPTS` | int | `5` | Failed attempts within the lockout window that lock the account, `1`–`100` |
+| `EMERGENCY_ADMIN_LOCKOUT_MINUTES` | int | `15` | The window counted for failures, and how long the lockout lasts, `1`–`1440` |
+
+Make the hash on a trusted machine and paste only the hash into `.env`:
+
+```bash
+python -m app.hash_emergency_password
+```
+
+It prompts twice without echo and prints the `EMERGENCY_ADMIN_PASSWORD_HASH=…`
+line. Use a long random password — the secret is shared by everyone who may use
+it — and rotate it after every use. The hash is read as a `SecretStr`, never
+logged, and never sent to Telegram. A user locked out is answered exactly like a
+wrong password; the attempts and the sessions they open are recorded in
+`admin_access_attempts` and `admin_access_sessions` ([Database schema](database-schema.md#admin-access)).
+Emergency sessions never join `ADMIN_IDS` and never receive new-order alerts.
+An active session passes the same `IsAdmin` gate as a configured admin and
+opens the same panel; it ends at `expires_at` or when revoked, effective on the
+next message. The authentication service is `app/services/emergency_admin.py`;
+the command is `/emergency_admin` (`app/handlers/user/emergency_admin.py`) — it
+asks for the password, deletes the message carrying it, and on success shows the
+admin panel. With the hash unset the command answers nothing.
+
 ## Reviews group
 
 Both optional. With neither set, the Reviews button reports that reviews are

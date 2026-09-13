@@ -3,6 +3,35 @@
 Notable changes, newest first. The repository has no version tags; entries are
 dated by their commits.
 
+## Unreleased
+
+### Added
+
+- **Admin access sessions (persistence only).** `admin_access_sessions` holds
+  temporary, revocable admin grants — user, method (`break_glass`), `expires_at`,
+  `revoked_at` — behind `AdminAccessService`. Revocation is a timestamp, so the
+  table is its own audit trail. No credential is stored, nobody is added to
+  `ADMIN_IDS`, and no command or authorization path uses it yet. Migration
+  `d7a3f9c2e8b1`; its downgrade refuses while sessions exist.
+- **Emergency admin authentication (service only).** `EmergencyAdminAuthService`
+  checks a password against `EMERGENCY_ADMIN_PASSWORD_HASH` (scrypt, a `$`-free PHC-style string,
+  made with `python -m app.hash_emergency_password`; verified in constant time in a worker
+  thread), refuses empty credentials, locks a user out after
+  `EMERGENCY_ADMIN_MAX_FAILED_ATTEMPTS` failures for
+  `EMERGENCY_ADMIN_LOCKOUT_MINUTES`, and on success opens one session lasting
+  `EMERGENCY_ADMIN_SESSION_TTL_MINUTES`, revoking the user's earlier one. Every
+  attempt is recorded in `admin_access_attempts` (migration `e8b2c4d6f1a3`, guarded
+  downgrade); no credential is ever stored or logged.
+- **`/emergency_admin`.** Asks for the password, deletes the message that carried
+  it, checks it through the service, and on success shows the existing admin
+  panel; every denial reads like a non-admin's `/admin`, and with the hash unset
+  the command is silent. Localized in Russian, English, German and Ukrainian.
+- **Emergency sessions authorize the admin panel.** `resolve_admin_grant` decides
+  admin access once for `IsAdmin`, `IsNotAdmin` and `AdminOnlyMiddleware`:
+  `ADMIN_IDS` from settings alone, as before, or an active break-glass session read
+  on every update. Handlers receive the decision as `admin_grant`; expiry and
+  revocation take effect on the next message; `ADMIN_IDS` is never changed.
+
 ## 2026-09-12 — Loyalty, roulette and referral release
 
 ### Added

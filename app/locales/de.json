@@ -275,6 +275,9 @@
   "admin": {
     "panel_ready": "⚙️ Admin-Bereich ist bereit.\nWähle einen Bereich:",
     "access_denied": "⛔ Zugriff verweigert.",
+    "emergency_ask_password": "🔐 Geben Sie das Passwort für den Notfallzugang ein.\nIhre Nachricht wird nach der Prüfung gelöscht.",
+    "emergency_granted": "✅ Notfallzugang gewährt.\nGültig für: {minutes} Min.",
+    "emergency_cancelled": "❌ Notfallzugang abgebrochen.",
     "menu_products": "📦 Produkte",
     "menu_categories": "📂 Kategorien",
     "menu_orders": "📋 Bestellungen",

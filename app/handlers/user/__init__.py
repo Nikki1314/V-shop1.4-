@@ -2,7 +2,18 @@
 
 from aiogram import Router
 
-from . import admin_guard, cart, catalog, checkout, info, invite, roulette, stamp_card, start
+from . import (
+    admin_guard,
+    cart,
+    catalog,
+    checkout,
+    emergency_admin,
+    info,
+    invite,
+    roulette,
+    stamp_card,
+    start,
+)
 
 
 def get_user_router() -> Router:
@@ -10,6 +21,9 @@ def get_user_router() -> Router:
     router = Router(name="user")
     # start first so /start wins; menu navigation routers next
     router.include_router(start.router)
+    # Right after start: its command and its password step must win over every
+    # free-text handler below (checkout's name and address steps included).
+    router.include_router(emergency_admin.router)
     router.include_router(catalog.router)
     router.include_router(cart.router)
     # Ahead of checkout, like cart: their menu buttons must win over checkout's

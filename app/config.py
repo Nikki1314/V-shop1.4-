@@ -5,9 +5,10 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.utils.passwords import parse_password_hash
 from app.utils.periods import DEFAULT_TIMEZONE
 
 
@@ -164,6 +165,35 @@ class Settings(BaseSettings):
     roulette_prize_free_bottle_weight: int = Field(
         default=5, ge=0, le=1_000_000, description="Roulette weight of a free bottle."
     )
+    # Emergency (break-glass) admin access. Off unless the hash is set. The
+    # secret is configured only as a hash, made with `python -m app.hash_emergency_password`;
+    # a malformed hash stops the bot at startup rather than refusing every
+    # attempt at the worst moment.
+    emergency_admin_password_hash: SecretStr | None = Field(
+        default=None,
+        description=(
+            "scrypt hash of the emergency admin password (scrypt:ln=…,r=…,p=…:salt:digest). "
+            "Unset disables emergency access."
+        ),
+    )
+    emergency_admin_session_ttl_minutes: int = Field(
+        default=30,
+        ge=1,
+        le=720,  # AdminAccessService.MAX_SESSION_TTL — twelve hours
+        description="How long an emergency admin session lasts; never renewed, only reopened.",
+    )
+    emergency_admin_max_failed_attempts: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Failed emergency logins within the lockout window that lock the account.",
+    )
+    emergency_admin_lockout_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=1440,
+        description="Window counted for failed emergency logins, and how long a lockout lasts.",
+    )
     app_env: str = Field(default="development", description="Application environment name")
     log_level: str = Field(default="INFO", description="Root logging level")
     telegram_ssl_verify: bool = Field(
@@ -175,6 +205,18 @@ class Settings(BaseSettings):
     @classmethod
     def parse_admin_ids(cls, value: object) -> list[int]:
         return _parse_admin_ids(value)
+
+    @field_validator("emergency_admin_password_hash", mode="after")
+    @classmethod
+    def emergency_hash_is_well_formed(cls, value: SecretStr | None) -> SecretStr | None:
+        """A blank value is "unset"; anything else must parse, or the bot does not start."""
+        if value is None:
+            return None
+        secret = value.get_secret_value().strip()
+        if not secret:
+            return None
+        parse_password_hash(secret)  # raises ValueError without echoing the value
+        return SecretStr(secret)
 
     @model_validator(mode="after")
     def roulette_has_a_prize(self) -> Self:
@@ -189,6 +231,10 @@ class Settings(BaseSettings):
         if sum(weights) <= 0:
             raise ValueError("At least one ROULETTE_PRIZE_*_WEIGHT must be above 0")
         return self
+
+    @property
+    def emergency_admin_enabled(self) -> bool:
+        return self.emergency_admin_password_hash is not None
 
     @property
     def reviews_enabled(self) -> bool:

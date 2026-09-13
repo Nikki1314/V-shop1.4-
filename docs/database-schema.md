@@ -335,6 +335,52 @@ CHECK: `referrer_user_id <> referred_user_id`.
 
 Indexes: `referrer_user_id`; unique `referred_user_id`, unique `qualifying_order_id`.
 
+## Admin access
+
+### `admin_access_sessions`
+
+A temporary, revocable admin grant for one registered user — the persistence
+behind break-glass access. A session is **active** while `revoked_at` is `NULL`
+and `expires_at` is still in the future; both timestamps are written from the
+service's clock (`AdminAccessService`, `app/services/admin_access.py`). Rows are
+never deleted by the application: revocation is a timestamp, so the table is the
+audit trail of who held temporary admin rights and when. It stores no credential
+of any kind and adds nobody to `ADMIN_IDS`. `resolve_admin_grant`
+(`app/security/admin.py`) reads it on every admin-router update from a user
+outside `ADMIN_IDS`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial PK | |
+| `user_id` | int FK → users | `ON DELETE RESTRICT`; the operator must be a registered user |
+| `auth_method` | varchar(32) | `break_glass` |
+| `expires_at` | timestamptz | Set once; never extended — a re-authentication opens a new session and revokes the old one |
+| `revoked_at` | timestamptz | Nullable; set once, never cleared |
+| `created_at` | timestamptz | |
+
+CHECK: `expires_at > created_at`; `revoked_at IS NULL OR revoked_at >= created_at`.
+
+Indexes: composite `(user_id, expires_at)`, partial on `revoked_at IS NULL` — the active-session lookup.
+
+### `admin_access_attempts`
+
+One row per emergency authentication attempt (`EmergencyAdminAuthService`,
+`app/services/emergency_admin.py`): who, by which method, with what outcome,
+when. The credential offered is never stored. The `failed` rows of the last
+`EMERGENCY_ADMIN_LOCKOUT_MINUTES` — after the user's last `succeeded` row —
+decide whether the next attempt is checked at all; an attempt refused that way is
+recorded as `locked_out`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial PK | |
+| `user_id` | int FK → users | `ON DELETE RESTRICT` |
+| `auth_method` | varchar(32) | `break_glass` |
+| `outcome` | varchar(32) | `succeeded` / `failed` / `locked_out` |
+| `created_at` | timestamptz | Written from the service's clock |
+
+Indexes: composite `(user_id, created_at)` — the lockout count.
+
 ## Status & enum values
 
 Every enum is stored **by value** as a plain `VARCHAR` (`native_enum=False`, with
@@ -354,6 +400,8 @@ a new value that needs its own source column requires a migration.
 | Prize type | `roulette_spins.prize_type` | `stamps`, `discount_percent`, `free_bottle` |
 | Reward kind | `user_rewards.kind` | `discount_percent`, `free_bottle` |
 | Reward source | `user_rewards.source` | `stamp_card`, `roulette` |
+| Admin access method | `admin_access_sessions.auth_method`, `admin_access_attempts.auth_method` | `break_glass` |
+| Admin access attempt outcome | `admin_access_attempts.outcome` | `succeeded`, `failed`, `locked_out` |
 | Reward status | `user_rewards.status` | `available`, `used` |
 | Referral status | `referrals.status` | `pending`, `qualified` |
 

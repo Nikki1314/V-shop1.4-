@@ -827,7 +827,14 @@ def test_what_customers_never_see_is_really_out_of_their_reach() -> None:
         rel = path.relative_to(APP).as_posix()
         for found in key.findall(path.read_text(encoding="utf-8")):
             named.setdefault(found, set()).add(rel)
-    admin_modules = ("handlers/admin", "keyboards/admin", "services/admin", "utils/admin")
+    # The break-glass entry is operator-facing too: it borrows the admin wizards' Cancel.
+    admin_modules = (
+        "handlers/admin",
+        "keyboards/admin",
+        "services/admin",
+        "utils/admin",
+        "handlers/user/emergency_admin",
+    )
     for unreachable, reason in UNREACHABLE.items():
         places = named.get(unreachable, set())
         if reason == UNUSED:

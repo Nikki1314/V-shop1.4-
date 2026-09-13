@@ -26,7 +26,21 @@ The admin panel keyboard:
 `AdminOnlyMiddleware`, which drops any update from a non-admin silently and logs
 a warning. A non-admin who sends `/admin` receives an access-denied message and
 never sees admin controls; a stranger's tap on an admin button is ignored. An
-empty `ADMIN_IDS` means nobody has admin access. Group chats are ignored entirely.
+empty `ADMIN_IDS` means nobody has a permanent admin seat. Group chats are ignored
+entirely. Besides `ADMIN_IDS`, an active emergency session
+([Configuration](configuration.md#emergency-admin-access)) passes the same gates
+and opens this same panel until it expires or is revoked; it never changes
+`ADMIN_IDS` and never receives new-order alerts.
+
+**Emergency access.** If your Telegram ID is not in `ADMIN_IDS` but the
+operator has set `EMERGENCY_ADMIN_PASSWORD_HASH`, send `/emergency_admin`, then
+the password as your next message, or in one line as `/emergency_admin <password>`
+(the bot deletes the message either way). A correct
+password opens this same panel for `EMERGENCY_ADMIN_SESSION_TTL_MINUTES`; a wrong
+one is answered "Access denied", and repeated failures lock you out for
+`EMERGENCY_ADMIN_LOCKOUT_MINUTES`. Sending the command again later opens a new
+session. Emergency sessions never receive new-order alerts and never change
+`ADMIN_IDS`. See [Configuration](configuration.md#emergency-admin-access).
 
 **Wizards.** While a wizard is active (adding a product, renaming a category, a
 broadcast, …), tapping another admin menu button is blocked until you **Cancel**

@@ -19,13 +19,35 @@ manipulate from a Telegram client.
 ## Identity and admin authorization
 
 - **Identity is Telegram's.** A user is the `from_user.id` of an update, stored as
-  `users.telegram_id` (unique). The bot has no passwords or sessions of its own.
-- **Admins are an allow-list.** `ADMIN_IDS` fails closed: empty or unparseable
-  means nobody is an admin. `is_admin_user` (`app/security/admin.py`) is the one
-  check, and a negative (group) id can never match.
+  `users.telegram_id` (unique). The bot has one password of its own — the
+  optional emergency admin secret, held only as a scrypt hash
+  (`EMERGENCY_ADMIN_PASSWORD_HASH`) and verified in constant time off the event
+  loop (`app/utils/passwords.py`). A successful check opens a time-boxed,
+  revocable session in `admin_access_sessions` (`app/services/emergency_admin.py`);
+  every attempt is recorded in `admin_access_attempts`, and after
+  `EMERGENCY_ADMIN_MAX_FAILED_ATTEMPTS` failures the user is locked out for
+  `EMERGENCY_ADMIN_LOCKOUT_MINUTES` — answered like any other failure. Neither
+  table holds a credential. `/emergency_admin` (`app/handlers/user/emergency_admin.py`)
+  asks for the password (or takes it from `/emergency_admin <password>`),
+  deletes the message that carried it, commits the
+  attempt before answering, and answers every denial with the non-admin's
+  "Access denied"; with the hash unset it says nothing. The command performs no
+  admin operation: a success only shows the panel, and every later tap passes
+  the admin router's gates.
+- **Admins are an allow-list, or hold an emergency session.** `ADMIN_IDS` fails
+  closed: empty or unparseable means nobody is a configured admin, and a negative
+  (group) id can never match. `resolve_admin_grant` (`app/security/admin.py`) is
+  the one decision: a configured id is granted from settings alone, without a
+  query; anyone else only by an `admin_access_sessions` row that is neither
+  revoked nor expired, read on every update, so revocation and expiry take effect
+  on the next message. Without a database session the answer is *no*. A grant
+  changes nothing in `ADMIN_IDS` and opens the same panel and handlers, and the
+  handler receives it as `admin_grant` so an action can be attributed to the
+  session that authorized it.
 - **Two gates on the admin router.** Router-level `IsAdmin` filters and
   `AdminOnlyMiddleware`, which drops unauthorized updates silently and logs a
-  warning with the user id. A non-admin sending `/admin` gets an access-denied
+  warning with the user id; both call `resolve_admin_grant`, and no handler
+  repeats the check. A non-admin sending `/admin` gets an access-denied
   message from the user router; a stranger's tap on a stale admin button is
   dropped without an answer (the fallback router excludes `admin:` callbacks).
 - **Private chats only.** `PrivateChatMiddleware` drops every update that is not
@@ -92,7 +114,7 @@ first paid order is completed by an admin.
 
 ## Secrets and configuration
 
-- Secrets (`BOT_TOKEN`, database credentials) live in `.env`, which is excluded by
+- Secrets (`BOT_TOKEN`, database credentials, the emergency admin password hash) live in `.env`, which is excluded by
   `.gitignore` and `.dockerignore`; `.env.example` holds placeholders only.
 - The database URL is logged with its password masked; the bot token is never
   logged.
@@ -116,7 +138,7 @@ only). The bot container reaches the database as `db:5432`.
 
 | Area | Status |
 |---|---|
-| Flood / rate limiting | Not implemented: there is no per-user throttle and no limit on concurrent update handling. Broadcasts are paced and honour Telegram's `RetryAfter`. |
+| Flood / rate limiting | No general per-user throttle and no limit on concurrent update handling. The one exception is emergency admin authentication, which locks a user out after repeated failures. Broadcasts are paced and honour Telegram's `RetryAfter`. |
 | Webhooks | Not used — the bot long-polls, so no inbound HTTP endpoint exists. |
 | Encryption at rest, backups | Delegated to the host; backups are a documented manual procedure ([Deployment](deployment.md#backups)). |
 | Container hardening | The image runs as root and is not scanned in a pipeline. |

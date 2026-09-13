@@ -275,6 +275,9 @@
   "admin": {
     "panel_ready": "⚙️ Admin panel is ready.\nChoose a section:",
     "access_denied": "⛔ Access denied.",
+    "emergency_ask_password": "🔐 Enter the emergency access password.\nYour message will be deleted once it has been checked.",
+    "emergency_granted": "✅ Emergency access granted.\nValid for: {minutes} min.",
+    "emergency_cancelled": "❌ Emergency access cancelled.",
     "menu_products": "📦 Products",
     "menu_categories": "📂 Categories",
     "menu_orders": "📋 Orders",

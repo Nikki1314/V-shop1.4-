@@ -24,6 +24,21 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.scalars(select(User).where(User.telegram_id == telegram_id))
         return result.first()
 
+    async def get_for_update(self, user_id: int) -> User | None:
+        """
+        The user's row, locked until the transaction ends.
+
+        Serialises operations on one person that must see each other's outcome —
+        emergency login attempts, where the count of recent failures decides
+        whether the next one is checked at all. Nothing else locks user rows, and
+        this lock is never held across a Telegram call.
+        """
+        await self.session.flush()
+        result = await self.session.scalars(
+            select(User).where(User.id == user_id).with_for_update()
+        )
+        return result.first()
+
     async def get_by_telegram_id_with_cart(self, telegram_id: int) -> User | None:
         result = await self.session.scalars(
             select(User).where(User.telegram_id == telegram_id).options(selectinload(User.cart))

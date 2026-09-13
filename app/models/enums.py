@@ -87,3 +87,20 @@ class RewardStatus(StrEnum):
 class ReferralStatus(StrEnum):
     PENDING = "pending"
     QUALIFIED = "qualified"
+
+
+# --- admin access -------------------------------------------------------------
+
+
+class AdminAccessMethod(StrEnum):
+    """How a temporary admin session was obtained. Stored by value."""
+
+    BREAK_GLASS = "break_glass"
+
+
+class AdminAccessAttemptOutcome(StrEnum):
+    """What one authentication attempt came to. Stored by value."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"  # wrong or empty credential
+    LOCKED_OUT = "locked_out"  # refused unchecked: too many recent failures
