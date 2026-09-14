@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -31,12 +32,22 @@ import app.models  # noqa: F401  (populates the metadata)
 from app import lifecycle
 from app.database.base import Base
 from app.handlers.user import roulette as roulette_screen
-from app.models.enums import OrderStatus, RewardStatus, RewardType, SpinGrantReason
-from app.models.loyalty import LoyaltyAccount
+from app.keyboards.admin_loyalty import CALLBACK_LOYALTY_CONFIRM_PREFIX
+from app.models.enums import (
+    AdminAccessMethod,
+    LoyaltyTransactionType,
+    OrderStatus,
+    RewardStatus,
+    RewardType,
+    SpinGrantReason,
+)
+from app.models.loyalty import LoyaltyAccount, LoyaltyTransaction
+from app.models.loyalty_adjustment import LoyaltyStampAdjustment
 from app.models.order import Order
 from app.models.referral import Referral
 from app.models.roulette import RouletteSpin
 from app.models.user import User
+from app.repositories.admin_access_session import AdminAccessSessionRepository
 from app.services.localization import LocalizationService
 from app.services.loyalty import LoyaltyService
 from app.utils.cache import invalidate_categories_cache
@@ -328,3 +339,102 @@ async def test_one_customer_pressing_every_reward_button_at_once(
         health = await loyalty_health(session)
     assert set(health["integrity"].values()) == {0}
     assert no_errors(bot, fay)
+
+
+# ======================================================= manual stamp credits
+
+
+async def test_operators_confirming_credits_at_once_book_each_once(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """
+    Two operators — a configured admin and a break-glass holder — confirm credits
+    to one customer at the same moment, and the admin's own Confirm arrives
+    RACERS times at once on top. The account lock serialises the credits, the
+    operation id makes the replays one credit, and the ledger's running balance
+    explains every row.
+    """
+    admin, holder, customer = ADMIN_ID, 8_701, 8_702
+    async with sessions() as session:
+        await make_user(session, telegram_id=admin)
+        holder_row = await make_user(session, telegram_id=holder)
+        await make_user(session, telegram_id=customer)
+        now = datetime.now(UTC)
+        await AdminAccessSessionRepository(session).open(
+            holder_row.id,
+            auth_method=AdminAccessMethod.BREAK_GLASS,
+            created_at=now,
+            expires_at=now + timedelta(hours=1),
+        )
+        await session.commit()
+    bot = RunningBot(sessions, tree_settings())
+
+    async def to_confirmation(operator: int, amount: str) -> str:
+        await bot.send(operator, "/admin_adjust_stamps")
+        await bot.send(operator, str(customer))
+        await bot.send(operator, amount)
+        return bot.button(operator, CALLBACK_LOYALTY_CONFIRM_PREFIX)
+
+    first = await to_confirmation(admin, "2")
+    second = await to_confirmation(holder, "3")
+    admin_screen = bot.showing(admin, first)
+    holder_screen = bot.showing(holder, second)
+
+    await at_once(
+        bot,
+        *[bot.tap(admin, first, on=admin_screen) for _ in range(RACERS)],
+        bot.tap(holder, second, on=holder_screen),
+    )
+
+    async with sessions() as session:
+        customer_id = int(
+            await session.scalar(select(User.id).where(User.telegram_id == customer)) or 0
+        )
+        loyalty = LoyaltyService(session)
+        assert await loyalty.balance(customer_id) == 5
+        assert await loyalty.ledger_balance(customer_id) == 5
+        rows = list(
+            await session.scalars(
+                select(LoyaltyTransaction)
+                .where(LoyaltyTransaction.user_id == customer_id)
+                .order_by(LoyaltyTransaction.id)
+            )
+        )
+        assert [row.kind for row in rows] == [LoyaltyTransactionType.ADJUSTMENT] * 2
+        assert sorted(row.amount for row in rows) == [2, 3]
+        assert [row.balance_after for row in rows] == [rows[0].amount, 5]
+        authors = list(await session.scalars(select(LoyaltyStampAdjustment)))
+        assert len(authors) == 2 and len({a.operation_id for a in authors}) == 2
+        health = await loyalty_health(session)
+        assert set(health["integrity"].values()) == {0}, health["integrity"]
+        assert health["audit"] == {"adjustments_without_their_author": 0}
+    done = EN.t(
+        "admin.loyalty_done", amount=2, username="@user452536082", telegram_id=customer, balance=2
+    )
+    assert (
+        bot.texts(admin).count(done)
+        + bot.texts(admin).count(
+            EN.t(
+                "admin.loyalty_done",
+                amount=2,
+                username="@user8702",
+                telegram_id=customer,
+                balance=5,
+            )
+        )
+        + bot.texts(admin).count(
+            EN.t(
+                "admin.loyalty_done",
+                amount=2,
+                username="@user8702",
+                telegram_id=customer,
+                balance=2,
+            )
+        )
+        == 1
+    )
+    assert {getattr(m, "chat_id", None) for m, _ in bot.telegram.calls} <= {admin, holder, None}
+    assert no_errors(bot, admin, holder), {
+        "admin": (bot.texts(admin), bot.alerts(admin)),
+        "holder": (bot.texts(holder), bot.alerts(holder)),
+    }

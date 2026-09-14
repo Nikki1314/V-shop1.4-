@@ -22,13 +22,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
 
 from aiogram.types import User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.models.enums import AdminAccessKind
 from app.services.admin_access import AdminAccessService, Clock, utc_now
+
+__all__ = [
+    "AdminAccessKind",
+    "AdminGrant",
+    "is_admin_id",
+    "is_admin_user",
+    "resolve_admin_grant",
+]
 
 
 def is_admin_id(telegram_id: int | None, settings: Settings | None = None) -> bool:
@@ -44,13 +52,6 @@ def is_admin_user(user: User | None, settings: Settings | None = None) -> bool:
     if user is None:
         return False
     return is_admin_id(user.id, settings)
-
-
-class AdminAccessKind(StrEnum):
-    """How an update was authorized for the admin router."""
-
-    CONFIGURED = "configured"  # listed in ADMIN_IDS
-    BREAK_GLASS = "break_glass"  # holds an active emergency session
 
 
 @dataclass(frozen=True, slots=True)

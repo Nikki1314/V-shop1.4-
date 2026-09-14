@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -38,6 +38,21 @@ class UserRepository(BaseRepository[User]):
             select(User).where(User.id == user_id).with_for_update()
         )
         return result.first()
+
+    async def list_by_username(self, username: str) -> list[User]:
+        """
+        Every row storing ``username`` (case-insensitive, no ``@``), oldest first.
+
+        Usernames are not unique in the table: a handle can change hands, and
+        the old holder keeps it until they next message the bot. Callers treat
+        more than one row as ambiguous rather than picking one.
+        """
+        result = await self.session.scalars(
+            select(User)
+            .where(func.lower(User.username) == username.lower())
+            .order_by(User.id.asc())
+        )
+        return list(result.all())
 
     async def get_by_telegram_id_with_cart(self, telegram_id: int) -> User | None:
         result = await self.session.scalars(

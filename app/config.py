@@ -113,6 +113,12 @@ class Settings(BaseSettings):
         decimal_places=2,
         description="Most expensive product a free bottle may cover.",
     )
+    loyalty_admin_max_stamp_adjustment: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Most stamps one manual credit by an operator may add to a customer's card.",
+    )
     roulette_initial_free_spin: bool = Field(
         default=True,
         description="Every customer gets one welcome roulette spin — once, ever.",

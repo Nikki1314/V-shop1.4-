@@ -321,6 +321,7 @@ linear and single-headed.
 | `c5d2e8f1a6b3` | adds `user_rewards.discount_amount` and `redeemed_product_id` (both nullable, plus a consistency CHECK); touches no catalog, order or user table | **Guarded.** Refuses while used rewards exist — their redemption record would be lost; `-x allow_loyalty_data_loss=true` overrides |
 | `d7a3f9c2e8b1` | adds `admin_access_sessions` (temporary, revocable admin grants; no credentials); touches no existing table and backfills nothing | **Guarded.** Refuses while any session row exists — the record of who held temporary admin rights would be lost; `-x allow_admin_access_data_loss=true` overrides |
 | `e8b2c4d6f1a3` | adds `admin_access_attempts` (the record of every emergency login attempt; no credentials); touches no existing table and backfills nothing | **Guarded.** Refuses while any attempt row exists; `-x allow_admin_access_data_loss=true` overrides |
+| `f3c7a1d9e2b5` | adds `loyalty_stamp_adjustments` (the author and operation id of each manual stamp credit); touches no existing table and backfills nothing | **Guarded.** Refuses while any row exists — the authors of manual credits would be lost; `-x allow_loyalty_data_loss=true` overrides |
 
 **No `upgrade()` in this project drops a table, drops a column, truncates, or
 deletes rows.** Backfills are `INSERT`/`UPDATE` only. That rule is enforced by

@@ -14,13 +14,18 @@ from app.models.order import Order
 from app.models.product import Product
 from app.services.admin.catalog import AdminCatalogService
 from app.services.admin.exceptions import (
+    AmbiguousCustomerError,
     CategoryInUseError,
+    CustomerLookupError,
+    CustomerNotFoundError,
     InvalidStatusTransitionError,
+    MalformedCustomerIdentifierError,
     ProductInUseError,
     SubcategoryInUseError,
 )
+from app.services.admin.loyalty import AdminLoyaltyService, StampAdjustmentPolicy
 from app.services.admin.orders import AdminOrderService
-from app.services.admin.users import AdminUserService
+from app.services.admin.users import AdminUserService, CustomerIdentity, IdentifierKind
 from app.services.referral_program import ReferralPolicy
 from app.services.spin_entitlement import SpinPolicy
 from app.services.stamp_card import StampCardPolicy
@@ -28,10 +33,17 @@ from app.services.stamp_card import StampCardPolicy
 __all__ = [
     "AdminService",
     "AdminCatalogService",
+    "AdminLoyaltyService",
     "AdminOrderService",
     "AdminUserService",
+    "AmbiguousCustomerError",
     "CategoryInUseError",
+    "CustomerIdentity",
+    "CustomerLookupError",
+    "CustomerNotFoundError",
+    "IdentifierKind",
     "InvalidStatusTransitionError",
+    "MalformedCustomerIdentifierError",
     "ProductInUseError",
     "SubcategoryInUseError",
 ]
@@ -58,6 +70,11 @@ class AdminService:
             ),
         )
         self.user_admin = AdminUserService(session)
+        self.loyalty_admin = AdminLoyaltyService(
+            session,
+            StampAdjustmentPolicy.from_settings(settings) if settings is not None else None,
+            stamp_policy=StampCardPolicy.from_settings(settings) if settings is not None else None,
+        )
         # Preserve legacy repository attributes used by some call sites.
         self.products = self.catalog.products
         self.categories = self.catalog.categories

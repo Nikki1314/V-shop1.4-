@@ -1,4 +1,9 @@
-"""Broadcast service — send messages to all registered users."""
+"""Broadcast service — send messages to all registered users.
+
+Sent only when an admin composes and confirms a broadcast. Nothing here is
+triggered by loyalty state: a manual stamp credit by an operator never starts,
+joins or targets a broadcast.
+"""
 
 from __future__ import annotations
 

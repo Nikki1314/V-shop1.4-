@@ -19,6 +19,7 @@ from app.models import (  # noqa: F401 — register models on metadata
     CartItem,
     Category,
     LoyaltyAccount,
+    LoyaltyStampAdjustment,
     LoyaltyTransaction,
     Order,
     OrderItem,

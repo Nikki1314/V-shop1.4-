@@ -122,6 +122,7 @@ All optional; these are the defaults.
 | `LOYALTY_STAMP_PURCHASE_THRESHOLD` | decimal | `20.00` | Charged order total that earns one stamp, in whole multiples: €20 → 1, €39.99 → 1, €40 → 2. At least `1.00` |
 | `LOYALTY_STAMPS_REQUIRED` | int | `10` | Stamps that unlock one free bottle |
 | `LOYALTY_FREE_BOTTLE_MAX_PRICE` | decimal | `20.00` | Most expensive product a free bottle may cover; snapshotted onto each reward when issued |
+| `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT` | int | `10` | Most stamps one manual credit by an operator may add to a customer's card, `1`–`100` (🪪 Loyalty in the admin panel or `/admin_adjust_stamps`; `AdminLoyaltyService`, `app/services/admin/loyalty.py`) |
 
 Stamps are booked when an admin marks an order **Completed**, from the order's
 charged total — after any discount, and a free bottle is a €0 line. An order

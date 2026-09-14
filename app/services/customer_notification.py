@@ -9,6 +9,12 @@ commits the status change first and only then calls this service, because:
 
 Every failure mode is therefore swallowed here and reported through the return
 value, never by raising into the caller's transaction.
+
+Triggered by one event only: an admin changing an order's status to one of
+``STATUS_MESSAGE_KEYS``. Nothing here reads the loyalty ledger, and no ledger
+row — least of all a manual stamp credit by an operator — ever produces a
+customer message. The customer sees credited stamps on their card, when they
+open it.
 """
 
 from __future__ import annotations

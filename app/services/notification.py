@@ -19,6 +19,12 @@ Everything the CUSTOMER sees is localized and must stay that way — see
 ``docs/architecture.md`` (Localization policy). If per-admin localization of
 the private-chat copies is ever wanted, localize there only and leave the
 group message in the operations language.
+
+Triggered by one event only: a customer confirming checkout. Nothing here reads
+the loyalty ledger, and no ledger row — a purchase award, a referral bonus, a
+manual stamp credit by an operator — ever produces an alert. A manual stamp
+credit in particular is silent by design: no message to the manager chat, no
+message to the admins; its record is the ledger row and its author row.
 """
 
 from __future__ import annotations

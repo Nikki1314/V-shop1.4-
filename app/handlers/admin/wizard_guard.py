@@ -20,6 +20,7 @@ _MENU_KEYS = (
     "admin.menu_broadcast",
     "admin.menu_statistics",
     "admin.menu_settings",
+    "admin.menu_loyalty",
 )
 
 
@@ -29,6 +30,7 @@ _MENU_KEYS = (
 @router.message(StateFilter(*ADMIN_WIZARD_STATES), LocalizedText(_MENU_KEYS[3]))
 @router.message(StateFilter(*ADMIN_WIZARD_STATES), LocalizedText(_MENU_KEYS[4]))
 @router.message(StateFilter(*ADMIN_WIZARD_STATES), LocalizedText(_MENU_KEYS[5]))
+@router.message(StateFilter(*ADMIN_WIZARD_STATES), LocalizedText(_MENU_KEYS[6]))
 async def admin_menu_during_wizard(
     message: Message,
     i18n: LocalizationService,

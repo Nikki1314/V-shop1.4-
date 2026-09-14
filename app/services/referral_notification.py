@@ -9,6 +9,11 @@ No message names the other side: the referrer is never told who joined or who
 ordered, and nothing typed after /start is echoed to anyone. Nothing here
 messages the newcomer at /start either — their replies stay exactly those of a
 plain /start (see ``cmd_start``), so nothing tells a guesser a code was real.
+
+Triggered by two events only: a referral attributed at /start, and a referral
+paid out by an order's completion (``payout_for_order``, keyed by that order).
+Nothing here reads ledger rows by kind: a manual stamp credit by an operator
+has no order and no referral, and never produces news for anyone.
 """
 
 from __future__ import annotations

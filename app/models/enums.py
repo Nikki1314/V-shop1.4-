@@ -98,6 +98,13 @@ class AdminAccessMethod(StrEnum):
     BREAK_GLASS = "break_glass"
 
 
+class AdminAccessKind(StrEnum):
+    """How an update was authorized for the admin router; recorded on audit rows."""
+
+    CONFIGURED = "configured"  # listed in ADMIN_IDS
+    BREAK_GLASS = "break_glass"  # holds an active emergency session
+
+
 class AdminAccessAttemptOutcome(StrEnum):
     """What one authentication attempt came to. Stored by value."""
 

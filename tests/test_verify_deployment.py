@@ -63,6 +63,7 @@ async def test_a_consistent_state_has_no_integrity_problem(session: AsyncSession
         "spin_grants_out_of_step_with_spins": 0,
         "spins_without_their_prize": 0,
         "referral_bonuses_before_qualification": 0,
+        "authors_disagreeing_with_their_adjustment": 0,
         "purchase_stamps_on_orders_that_do_not_qualify": 0,
         "milestone_spins_without_their_purchase": 0,
         "used_rewards_on_another_customers_order": 0,
@@ -70,6 +71,8 @@ async def test_a_consistent_state_has_no_integrity_problem(session: AsyncSession
         "referrals_qualified_by_an_order_that_does_not": 0,
     }
     assert health["coverage"] == {"users_without_account": 0, "users_without_welcome_spin": 0}
+    # The goodwill stamps above were adjusted directly, as tests do: reported, not a failure.
+    assert health["audit"] == {"adjustments_without_their_author": 1}
 
 
 async def test_coverage_counts_customers_not_yet_given_their_rows(session: AsyncSession) -> None:

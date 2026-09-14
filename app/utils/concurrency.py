@@ -13,6 +13,23 @@ _locks: dict[str, asyncio.Lock] = {}
 # tell an idle lock from one that is being handed over.
 _users: dict[str, int] = {}
 _registry_lock = asyncio.Lock()
+# The loop the registry belongs to. An asyncio.Lock binds to the loop it is first
+# contended on and refuses waiters from any other; the bot runs one loop for its
+# whole life, but a test process runs one loop per test, and a key contended in
+# an earlier test would otherwise hand a later one a lock it can never wait on.
+# A new running loop therefore starts with an empty registry.
+_bound_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _bind_to_running_loop() -> None:
+    global _bound_loop, _registry_lock
+    loop = asyncio.get_running_loop()
+    if _bound_loop is loop:
+        return
+    _locks.clear()
+    _users.clear()
+    _registry_lock = asyncio.Lock()
+    _bound_loop = loop
 
 
 def _prune_unused_locks() -> None:
@@ -27,6 +44,7 @@ def _prune_unused_locks() -> None:
 
 
 async def _lock_for(key: str) -> asyncio.Lock:
+    _bind_to_running_loop()
     async with _registry_lock:
         lock = _locks.get(key)
         if lock is None:

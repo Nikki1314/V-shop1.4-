@@ -91,6 +91,14 @@ class BroadcastStates(StatesGroup):
     preview = State()
 
 
+class AdjustStampsStates(StatesGroup):
+    """Manual stamp credit: who, how many, confirm."""
+
+    target = State()
+    amount = State()
+    confirmation = State()
+
+
 # Used to exclude admin menu handlers while any product wizard is active.
 PRODUCT_WIZARD_STATES = (
     AddProductStates,
@@ -113,6 +121,8 @@ ORDER_WIZARD_STATES = (SearchOrderStates,)
 
 BROADCAST_WIZARD_STATES = (BroadcastStates,)
 
+LOYALTY_WIZARD_STATES = (AdjustStampsStates,)
+
 # Exclude reply-menu handlers while any admin wizard is active.
 # A new wizard MUST be registered here or menu taps will corrupt its state.
 ADMIN_WIZARD_STATES = (
@@ -121,4 +131,5 @@ ADMIN_WIZARD_STATES = (
     + SUBCATEGORY_WIZARD_STATES
     + ORDER_WIZARD_STATES
     + BROADCAST_WIZARD_STATES
+    + LOYALTY_WIZARD_STATES
 )

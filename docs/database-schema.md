@@ -335,6 +335,29 @@ CHECK: `referrer_user_id <> referred_user_id`.
 
 Indexes: `referrer_user_id`; unique `referred_user_id`, unique `qualifying_order_id`.
 
+### `loyalty_stamp_adjustments`
+
+The author of a manual stamp credit (`AdminLoyaltyService.credit_stamps`,
+`app/services/admin/loyalty.py`). The stamps themselves are the
+`loyalty_transactions` row of kind `adjustment` this row points at; this row adds
+who credited them, under which authority, and the operation id that makes a
+repeated request the same credit.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | serial PK | |
+| `transaction_id` | int FK → loyalty_transactions | Unique — one author per adjustment row |
+| `user_id` | int FK → users | The customer credited; the ledger row's owner |
+| `actor_user_id` | int FK → users | The operator; never the customer |
+| `actor_kind` | varchar(32) | `configured` (in `ADMIN_IDS`) / `break_glass` |
+| `access_session_id` | int FK → admin_access_sessions | Set exactly when `actor_kind` is `break_glass` |
+| `operation_id` | varchar(36) | Canonical UUID chosen by the caller; unique — the idempotency key |
+| `created_at` | timestamptz | |
+
+CHECK: `(actor_kind = 'break_glass') = (access_session_id IS NOT NULL)`; `user_id <> actor_user_id`.
+
+Indexes: composite `(user_id, id)` — a customer's manual credits, newest first; unique `transaction_id`, unique `operation_id`.
+
 ## Admin access
 
 ### `admin_access_sessions`
@@ -402,6 +425,7 @@ a new value that needs its own source column requires a migration.
 | Reward source | `user_rewards.source` | `stamp_card`, `roulette` |
 | Admin access method | `admin_access_sessions.auth_method`, `admin_access_attempts.auth_method` | `break_glass` |
 | Admin access attempt outcome | `admin_access_attempts.outcome` | `succeeded`, `failed`, `locked_out` |
+| Admin access kind | `loyalty_stamp_adjustments.actor_kind` | `configured`, `break_glass` |
 | Reward status | `user_rewards.status` | `available`, `used` |
 | Referral status | `referrals.status` | `pending`, `qualified` |
 

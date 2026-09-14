@@ -32,6 +32,27 @@ dated by their commits.
   on every update. Handlers receive the decision as `admin_grant`; expiry and
   revocation take effect on the next message; `ADMIN_IDS` is never changed.
 
+- **Manual stamp credits (service only).** `AdminLoyaltyService.credit_stamps`
+  adds a positive number of stamps (at most `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`)
+  through the existing ledger (`adjustment` row, reason as note, account lock),
+  records the operator, their authority and a caller-supplied operation id in
+  `loyalty_stamp_adjustments` (migration `f3c7a1d9e2b5`, guarded downgrade), and is
+  idempotent per operation id. It issues no reward, counts no purchase and sends
+  nothing; the deployment health report counts adjustments without an author
+  (expected 0 in production) and flags author rows that disagree with their
+  ledger row. `AdminUserService.resolve_customer` names the target: a Telegram
+  id exactly, or a `@username` / `t.me/` link matched case-insensitively and
+  refused when missing or stored for more than one customer.
+- **`keyed_lock` and event loops.** The lock registry starts afresh when the running
+  event loop changes, so a key contended in one test's loop is never handed to the
+  next test as a lock it cannot wait on. No behaviour change for the bot, which
+  runs one loop for its whole life.
+- **🪪 Loyalty in the admin panel.** `/admin_adjust_stamps` or the new menu button:
+  customer (Telegram ID or `@username`), a card with their current stamps, the
+  amount, a confirmation whose button carries only an operation id, then the credit
+  through the service — once per screen, whatever is tapped twice, at once, late or
+  by someone else. Localized in Russian, English, German and Ukrainian.
+
 ## 2026-09-12 — Loyalty, roulette and referral release
 
 ### Added

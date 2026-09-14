@@ -20,6 +20,7 @@ The admin panel keyboard:
 | 📋 Orders | new and completed orders, search, status changes |
 | 📢 Broadcast | message every registered customer |
 | 📊 Statistics | orders, revenue and product rankings |
+| 🪪 Loyalty | credit stamps to a customer by hand |
 | ⚙ Settings | informational placeholder — configuration is done through environment variables |
 
 **Authorization model.** The admin router is gated twice: `IsAdmin` filters and
@@ -182,9 +183,21 @@ There is nothing to operate by hand:
   checkout;
 - a reward used on an order that is later cancelled stays used (owner decision).
 
-There is **no admin screen** for loyalty balances, manual stamp adjustments or
-loyalty settings. The rules are configured through environment variables (see
-[Configuration](configuration.md#loyalty-stamp-card)), and
+**Crediting stamps by hand** (🪪 Loyalty → ➕ Credit stamps, or
+`/admin_adjust_stamps`): send the customer's Telegram ID or `@username`; the bot
+shows who that is and their current stamps; send how many to add (a whole number,
+at most `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`); confirm. The credit is one ledger
+row, recorded with you as its author (and your emergency session, if you hold
+one). It does not count as a purchase, issues no reward by itself — if the card
+becomes full the customer claims the free bottle on it, as after a purchase —
+and sends no message to the customer or the manager chat. A username is matched
+against what the customer last showed the bot; if it is shared by several
+records, use the Telegram ID. You cannot credit yourself. Tapping Confirm twice,
+or a Confirm button from an earlier screen or after a restart, credits nothing
+more.
+
+There is no admin screen for loyalty settings: the rules are environment
+variables (see [Configuration](configuration.md#loyalty-stamp-card)), and
 `python -m app.verify_deployment` reports the loyalty integrity checks. How the
 programme works: [Loyalty](loyalty.md), [Roulette](roulette.md),
 [Referrals](referrals.md).

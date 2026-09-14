@@ -44,6 +44,7 @@ from app.models.enums import (
     SpinGrantReason,
 )
 from app.models.loyalty import LoyaltyAccount, LoyaltyTransaction
+from app.models.loyalty_adjustment import LoyaltyStampAdjustment
 from app.models.order import Order, OrderItem
 from app.models.product import Product
 from app.models.referral import Referral
@@ -196,6 +197,23 @@ async def loyalty_health(session: AsyncSession) -> dict[str, dict[str, int]]:
                 .select_from(RouletteSpinGrant)
                 .where(paid_before_qualifying(RouletteSpinGrant.referral_id))
             ),
+            # An author row always names a positive adjustment of the same customer.
+            "authors_disagreeing_with_their_adjustment": await count(
+                select(func.count())
+                .select_from(LoyaltyStampAdjustment)
+                .outerjoin(
+                    LoyaltyTransaction,
+                    LoyaltyTransaction.id == LoyaltyStampAdjustment.transaction_id,
+                )
+                .where(
+                    or_(
+                        LoyaltyTransaction.id.is_(None),
+                        LoyaltyTransaction.kind != LoyaltyTransactionType.ADJUSTMENT,
+                        LoyaltyTransaction.user_id != LoyaltyStampAdjustment.user_id,
+                        LoyaltyTransaction.amount <= 0,
+                    )
+                )
+            ),
             "purchase_stamps_on_orders_that_do_not_qualify": await count(
                 select(func.count())
                 .select_from(LoyaltyTransaction)
@@ -252,6 +270,20 @@ async def loyalty_health(session: AsyncSession) -> dict[str, dict[str, int]]:
                         Order.id.is_(None),
                         ~and_(Order.user_id == Referral.referred_user_id, qualifying_order),
                     ),
+                )
+            ),
+        },
+        # Manual credits made through AdminLoyaltyService always carry their
+        # author; an adjustment row without one was written another way
+        # (LoyaltyService.adjust directly — tests do, a migration might). Not an
+        # integrity failure, but in production the count should stay 0.
+        "audit": {
+            "adjustments_without_their_author": await count(
+                select(func.count())
+                .select_from(LoyaltyTransaction)
+                .where(
+                    LoyaltyTransaction.kind == LoyaltyTransactionType.ADJUSTMENT,
+                    ~exists().where(LoyaltyStampAdjustment.transaction_id == LoyaltyTransaction.id),
                 )
             ),
         },

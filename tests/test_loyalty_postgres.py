@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal
 from typing import Any
@@ -35,6 +36,7 @@ import app.models  # noqa: F401  (populates the metadata)
 from app.database.base import Base
 from app.models.cart import Cart
 from app.models.enums import (
+    AdminAccessKind,
     LoyaltyTransactionType,
     OrderStatus,
     PaymentMethod,
@@ -50,6 +52,7 @@ from app.models.reward import UserReward
 from app.models.roulette import RouletteSpin, RouletteSpinGrant
 from app.models.user import User
 from app.services.admin import AdminService, InvalidStatusTransitionError
+from app.services.admin.loyalty import AdjustmentActor, AdminLoyaltyService
 from app.services.cart import CartService
 from app.services.loyalty import (
     InsufficientStampsError,
@@ -948,3 +951,61 @@ async def test_a_chain_closed_from_both_ends_at_once_never_loops(pg: Factory) ->
         "exactly one of the two closing referrals is recorded"
     )
     assert ReferralOutcome.LOOP in results
+
+
+# ------------------------------------------------------ manual stamp credits
+
+
+async def _customer_and_operator(session: AsyncSession) -> tuple[int, int]:
+    customer = await make_user(session, telegram_id=9_701)
+    operator = await make_user(session, telegram_id=9_702)
+    return customer.id, operator.id
+
+
+async def test_a_racing_manual_credit_with_one_operation_id_books_once(pg: Factory) -> None:
+    customer_id, operator_id = await seed(pg, _customer_and_operator)
+    operation_id = str(uuid.uuid4())
+
+    async def credit(session: AsyncSession, index: int) -> Any:
+        return await AdminLoyaltyService(session).credit_stamps(
+            target_user_id=customer_id,
+            amount=3,
+            reason="race",
+            actor=AdjustmentActor(operator_id, AdminAccessKind.CONFIGURED),
+            operation_id=operation_id,
+        )
+
+    results = await race(pg, credit)
+
+    assert errors(results) == []
+    assert sum(1 for result in results if result.created) == 1
+    assert {result.transaction.id for result in results} == {results[0].transaction.id}
+    async with pg() as session:
+        assert await LoyaltyService(session).balance(customer_id) == 3
+        assert await LoyaltyService(session).ledger_balance(customer_id) == 3
+        assert len(await AdminLoyaltyService(session).history(customer_id)) == 1
+
+
+async def test_racing_manual_credits_with_distinct_operation_ids_all_book(pg: Factory) -> None:
+    customer_id, operator_id = await seed(pg, _customer_and_operator)
+
+    async def credit(session: AsyncSession, index: int) -> Any:
+        return await AdminLoyaltyService(session).credit_stamps(
+            target_user_id=customer_id,
+            amount=2,
+            reason=f"credit {index}",
+            actor=AdjustmentActor(operator_id, AdminAccessKind.CONFIGURED),
+            operation_id=str(uuid.uuid4()),
+        )
+
+    results = await race(pg, credit)
+
+    assert errors(results) == []
+    assert all(result.created for result in results)
+    async with pg() as session:
+        loyalty = LoyaltyService(session)
+        assert await loyalty.balance(customer_id) == 2 * RACERS
+        assert await loyalty.ledger_balance(customer_id) == 2 * RACERS
+        rows = await loyalty.history(customer_id, limit=RACERS + 1)
+        assert sorted(row.balance_after for row in rows) == [2 * n for n in range(1, RACERS + 1)]
+        assert len(await AdminLoyaltyService(session).history(customer_id, limit=None)) == RACERS

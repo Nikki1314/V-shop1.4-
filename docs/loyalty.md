@@ -99,8 +99,20 @@ is a cache written in the same flush as each ledger row.
   [Auditability](#auditability)).
 
 The ledger also supports signed `adjustment` rows with a mandatory note
-(`LoyaltyService.adjust`). **No admin screen exposes them**; they exist for the
-service layer and tests.
+(`LoyaltyService.adjust`). Operators credit stamps through
+`AdminLoyaltyService.credit_stamps` (`app/services/admin/loyalty.py`): positive
+whole numbers only, at most `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT` per credit, with a
+reason that becomes the row's note. Each credit also writes a
+`loyalty_stamp_adjustments` row — the operator, whether they acted as a
+configured admin or under a break-glass session, and a caller-supplied
+operation id that makes a repeated request the same credit rather than a second
+one. A credit never issues a reward, never counts as a purchase and never sends a
+message: crossing the threshold means what it means after a purchase — the
+customer claims the free bottle on their card. Operators reach it through
+🪪 Loyalty in the admin panel or `/admin_adjust_stamps`
+(`app/handlers/admin/loyalty.py`: customer, amount, confirm; the confirm button
+carries only the operation id, and a stale or duplicate tap credits nothing).
+Direct `LoyaltyService.adjust` calls remain for tests.
 
 ## The 🪪 My Stamp Card screen
 
@@ -199,7 +211,14 @@ Telegram update or a restart simply runs it again.
 - stamp-card rewards without their debit;
 - purchase stamps on an order that is not the customer's own qualifying purchase;
 - a used reward on another customer's order, or a used free bottle without its
-  €0 line.
+  €0 line;
+- an author row (`loyalty_stamp_adjustments`) that does not name a positive
+  adjustment of the same customer.
+
+Under `audit` it also counts `adjustment` rows without an author row. Manual
+credits made through `AdminLoyaltyService` always have one; a direct
+`LoyaltyService.adjust` (tests, a data migration) does not, so the count is
+reported rather than treated as corruption — in production it should stay `0`.
 
 The bot never produces any of these, so every counter must be `0`; the command is
 part of the [deployment verification](deployment.md#verifying-a-deploy).

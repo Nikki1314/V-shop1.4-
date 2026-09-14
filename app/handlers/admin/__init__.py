@@ -7,6 +7,7 @@ from app.filters.admin import IsAdmin
 from app.handlers.admin import (
     broadcast,
     categories,
+    loyalty,
     orders,
     panel,
     product_manage,
@@ -47,6 +48,7 @@ def get_admin_router(settings: Settings | None = None) -> Router:
     router.include_router(orders.router)
     router.include_router(broadcast.router)
     router.include_router(statistics.router)
+    router.include_router(loyalty.router)
     router.include_router(admin_settings.router)
     router.include_router(panel.router)
     return router

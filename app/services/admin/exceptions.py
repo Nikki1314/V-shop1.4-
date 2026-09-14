@@ -22,3 +22,19 @@ class InvalidStatusTransitionError(Exception):
         self.current = current
         self.target = target
         super().__init__(f"Cannot move order from {current} to {target}")
+
+
+class CustomerLookupError(ValueError):
+    """An operator's customer identifier could not be turned into exactly one customer."""
+
+
+class MalformedCustomerIdentifierError(CustomerLookupError):
+    """Neither a Telegram id nor a username."""
+
+
+class CustomerNotFoundError(CustomerLookupError):
+    """No registered customer has that id or username."""
+
+
+class AmbiguousCustomerError(CustomerLookupError):
+    """More than one stored row carries that username; only the id can decide."""

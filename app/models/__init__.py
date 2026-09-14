@@ -5,6 +5,7 @@ from app.models.cart import Cart, CartItem
 from app.models.category import Category, Subcategory
 from app.models.enums import CityChoice, DeliveryType, LanguageCode, OrderStatus
 from app.models.loyalty import LoyaltyAccount, LoyaltyTransaction
+from app.models.loyalty_adjustment import LoyaltyStampAdjustment
 from app.models.order import Order, OrderItem
 from app.models.product import Product
 from app.models.referral import Referral
@@ -22,6 +23,7 @@ __all__ = [
     "DeliveryType",
     "LanguageCode",
     "LoyaltyAccount",
+    "LoyaltyStampAdjustment",
     "LoyaltyTransaction",
     "Order",
     "OrderItem",
