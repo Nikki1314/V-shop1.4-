@@ -44,9 +44,13 @@ from app.repositories.user import UserRepository
 from app.services.admin.loyalty import AdminLoyaltyService, InvalidAdjustmentError
 from app.services.localization import LocalizationService
 from app.services.loyalty import LoyaltyService
+from app.utils.passwords import MIN_LOG_N, hash_password
 from tests.factories import make_user
 from tests.production_bot import ADMIN_ID, MANAGER_CHAT_ID, RunningBot, tree_settings
 from tests.test_loyalty_journeys import no_errors, sessions  # noqa: F401  (fixture)
+
+# Break-glass sessions only count while emergency access is configured.
+EMERGENCY_HASH = hash_password("operator on call tonight", log_n=MIN_LOG_N)
 
 EN = LocalizationService("en")
 CUSTOMER, HOLDER, STRANGER, TWIN = 9_811, 9_812, 9_813, 9_814
@@ -73,7 +77,12 @@ async def bot(sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[Runni
             expires_at=now + timedelta(hours=1),
         )
         await session.commit()
-    yield RunningBot(sessions, tree_settings(loyalty_admin_max_stamp_adjustment=MAX))
+    yield RunningBot(
+        sessions,
+        tree_settings(
+            loyalty_admin_max_stamp_adjustment=MAX, emergency_admin_password_hash=EMERGENCY_HASH
+        ),
+    )
 
 
 async def balance(bot: RunningBot, telegram_id: int) -> int:
@@ -215,7 +224,12 @@ async def test_every_text_is_in_the_operators_language(
         customer = await make_user(session, telegram_id=CUSTOMER)
         customer.username = None
         await session.commit()
-    bot = RunningBot(sessions, tree_settings(loyalty_admin_max_stamp_adjustment=MAX))
+    bot = RunningBot(
+        sessions,
+        tree_settings(
+            loyalty_admin_max_stamp_adjustment=MAX, emergency_admin_password_hash=EMERGENCY_HASH
+        ),
+    )
     own = LocalizationService(language.value)
     no_name = own.t("admin.loyalty_no_username")
 

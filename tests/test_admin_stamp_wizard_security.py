@@ -39,10 +39,14 @@ from app.repositories.loyalty_stamp_adjustment import LoyaltyStampAdjustmentRepo
 from app.services.admin_access import AdminAccessService
 from app.services.localization import LocalizationService
 from app.services.loyalty import LoyaltyService
+from app.utils.passwords import MIN_LOG_N, hash_password
 from app.verify_deployment import loyalty_health
 from tests.factories import make_user
 from tests.production_bot import ADMIN_ID, MANAGER_CHAT_ID, RunningBot, tree_settings
 from tests.test_loyalty_journeys import no_errors, sessions  # noqa: F401  (fixture)
+
+# Break-glass sessions only count while emergency access is configured.
+EMERGENCY_HASH = hash_password("operator on call tonight", log_n=MIN_LOG_N)
 
 EN = LocalizationService("en")
 CUSTOMER, HOLDER, STRANGER = 9_821, 9_822, 9_823
@@ -69,7 +73,12 @@ async def bot(sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[Runni
             expires_at=now + timedelta(hours=1),
         )
         await session.commit()
-    yield RunningBot(sessions, tree_settings(loyalty_admin_max_stamp_adjustment=MAX))
+    yield RunningBot(
+        sessions,
+        tree_settings(
+            loyalty_admin_max_stamp_adjustment=MAX, emergency_admin_password_hash=EMERGENCY_HASH
+        ),
+    )
 
 
 async def uid(bot: RunningBot, telegram_id: int) -> int:

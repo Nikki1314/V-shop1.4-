@@ -44,7 +44,11 @@ manipulate from a Telegram client.
   revoked nor expired, read on every update, so revocation and expiry take effect
   on the next message. A session ends by expiry, by the operator logging in again
   (which supersedes it) or by revocation in the database; the bot offers no logout
-  command. Without a database session the answer is *no*. A grant
+  command. Unsetting `EMERGENCY_ADMIN_PASSWORD_HASH` is the kill switch: from
+  the next update no session grants anything, and the next start revokes every
+  active one so the record shows when access ended. Every update served under an
+  emergency session is logged with the session id (ids only, never text), so the
+  request log attributes each privileged action to the session behind it. Without a database session the answer is *no*. A grant
   changes nothing in `ADMIN_IDS` and opens the same panel and handlers, and the
   handler receives it as `admin_grant` so an action can be attributed to the
   session that authorized it.

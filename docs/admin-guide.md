@@ -43,7 +43,8 @@ one is answered "Access denied", and repeated failures lock you out for
 `EMERGENCY_ADMIN_LOCKOUT_MINUTES`. Sending the command again later opens a new
 session and ends the previous one. There is no logout command: a session ends
 when it expires, when you log in again, or when whoever runs the database
-revokes it. Emergency sessions never receive new-order alerts and never change
+revokes it — or removes `EMERGENCY_ADMIN_PASSWORD_HASH` from `.env`, which ends
+every emergency session at once. Emergency sessions never receive new-order alerts and never change
 `ADMIN_IDS` — nobody becomes a permanent administrator this way. Every attempt
 and every session is recorded (`admin_access_attempts`, `admin_access_sessions`)
 for whoever runs the database to review. See

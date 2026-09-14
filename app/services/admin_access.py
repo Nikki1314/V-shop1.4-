@@ -115,6 +115,14 @@ class AdminAccessService:
             await self.sessions.revoke(access, at=at)
         return len(active)
 
+    async def revoke_every_active(self) -> int:
+        """End every active session of every user; returns how many there were."""
+        at = self.now()
+        active = await self.sessions.list_active(now=at)
+        for access in active:
+            await self.sessions.revoke(access, at=at)
+        return len(active)
+
     # --- audit ------------------------------------------------------------------
 
     async def history(self, user_id: int) -> list[AdminAccessSession]:

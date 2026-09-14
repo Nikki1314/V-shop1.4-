@@ -37,9 +37,13 @@ from app.security.admin import (
 )
 from app.services.admin_access import AdminAccessService
 from app.services.localization import LocalizationService
+from app.utils.passwords import MIN_LOG_N, hash_password
 from tests.factories import make_user
 from tests.production_bot import ADMIN_ID, RunningBot, tree_settings
 from tests.test_loyalty_journeys import no_errors, sessions  # noqa: F401  (fixture)
+
+# Break-glass sessions only count while emergency access is configured.
+EMERGENCY_HASH = hash_password("operator on call tonight", log_n=MIN_LOG_N)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EN = LocalizationService("en")
@@ -94,21 +98,23 @@ async def revoke(db: async_sessionmaker[AsyncSession], session_id: int) -> None:
 @pytest_asyncio.fixture
 async def bot(sessions: async_sessionmaker[AsyncSession]) -> AsyncIterator[RunningBot]:  # noqa: F811
     await register(sessions, ADMIN_ID, BREAK_GLASS, ORDINARY, EXPIRED, REVOKED, OTHER)
-    yield RunningBot(sessions, tree_settings())
+    yield RunningBot(sessions, tree_settings(emergency_admin_password_hash=EMERGENCY_HASH))
 
 
 # ======================================================= the decision itself
 
 
 async def test_a_configured_admin_is_granted_from_settings_alone(session: AsyncSession) -> None:
-    grant = await resolve_admin_grant(tg(ADMIN_ID), tree_settings(), None)
+    grant = await resolve_admin_grant(
+        tg(ADMIN_ID), tree_settings(emergency_admin_password_hash=EMERGENCY_HASH), None
+    )
     assert grant == AdminGrant(telegram_id=ADMIN_ID, kind=AdminAccessKind.CONFIGURED)
     assert not grant.is_break_glass
 
 
 async def test_nobody_and_an_ordinary_user_get_nothing(session: AsyncSession) -> None:
     await make_user(session, telegram_id=ORDINARY)
-    settings = tree_settings()
+    settings = tree_settings(emergency_admin_password_hash=EMERGENCY_HASH)
     assert await resolve_admin_grant(None, settings, session) is None
     assert await resolve_admin_grant(tg(ORDINARY), settings, session) is None
     assert await resolve_admin_grant(tg(NEVER_SEEN), settings, session) is None
@@ -118,15 +124,19 @@ async def test_an_active_session_grants_break_glass_access(session: AsyncSession
     user = await make_user(session, telegram_id=BREAK_GLASS)
     opened = await AdminAccessService(session).open_break_glass(user.id, ttl=TTL)
 
-    grant = await resolve_admin_grant(tg(BREAK_GLASS), tree_settings(), session)
+    grant = await resolve_admin_grant(
+        tg(BREAK_GLASS), tree_settings(emergency_admin_password_hash=EMERGENCY_HASH), session
+    )
 
     assert grant is not None and grant.is_break_glass
     assert grant.kind == AdminAccessKind.BREAK_GLASS
     assert grant.session_id == opened.session.id
     assert grant.expires_at == opened.session.expires_at
     # A grant is not membership.
-    assert not is_admin_id(BREAK_GLASS, tree_settings())
-    assert not is_admin_user(tg(BREAK_GLASS), tree_settings())
+    assert not is_admin_id(BREAK_GLASS, tree_settings(emergency_admin_password_hash=EMERGENCY_HASH))
+    assert not is_admin_user(
+        tg(BREAK_GLASS), tree_settings(emergency_admin_password_hash=EMERGENCY_HASH)
+    )
 
 
 async def test_an_expired_or_revoked_session_grants_nothing(session: AsyncSession) -> None:
@@ -143,7 +153,7 @@ async def test_an_expired_or_revoked_session_grants_nothing(session: AsyncSessio
     opened = await access.open_break_glass(revoked.id, ttl=TTL)
     await access.revoke(opened.session)
 
-    settings = tree_settings()
+    settings = tree_settings(emergency_admin_password_hash=EMERGENCY_HASH)
     assert await resolve_admin_grant(tg(EXPIRED), settings, session) is None
     assert await resolve_admin_grant(tg(REVOKED), settings, session) is None
 
@@ -154,8 +164,18 @@ async def test_without_a_database_session_only_configured_admins_pass(
     """A path that runs before DatabaseMiddleware cannot consult sessions: it fails closed."""
     user = await make_user(session, telegram_id=BREAK_GLASS)
     await AdminAccessService(session).open_break_glass(user.id, ttl=TTL)
-    assert await resolve_admin_grant(tg(BREAK_GLASS), tree_settings(), None) is None
-    assert await resolve_admin_grant(tg(ADMIN_ID), tree_settings(), None) is not None
+    assert (
+        await resolve_admin_grant(
+            tg(BREAK_GLASS), tree_settings(emergency_admin_password_hash=EMERGENCY_HASH), None
+        )
+        is None
+    )
+    assert (
+        await resolve_admin_grant(
+            tg(ADMIN_ID), tree_settings(emergency_admin_password_hash=EMERGENCY_HASH), None
+        )
+        is not None
+    )
 
 
 # ======================================================= the middleware reuses the decision
@@ -178,7 +198,7 @@ def _message(telegram_id: int) -> Message:
 async def test_the_middleware_trusts_the_filters_grant_and_injects_it() -> None:
     grant = AdminGrant(telegram_id=BREAK_GLASS, kind=AdminAccessKind.BREAK_GLASS, session_id=7)
     data: dict[str, Any] = {
-        "settings": tree_settings(),
+        "settings": tree_settings(emergency_admin_password_hash=EMERGENCY_HASH),
         "event_from_user": tg(BREAK_GLASS),
         "admin_grant": grant,
         "session": None,  # no database: proves the grant was reused, not re-resolved
@@ -191,7 +211,7 @@ async def test_the_middleware_trusts_the_filters_grant_and_injects_it() -> None:
 async def test_the_middleware_does_not_trust_a_grant_for_someone_else() -> None:
     stray = AdminGrant(telegram_id=BREAK_GLASS, kind=AdminAccessKind.BREAK_GLASS, session_id=7)
     data: dict[str, Any] = {
-        "settings": tree_settings(),
+        "settings": tree_settings(emergency_admin_password_hash=EMERGENCY_HASH),
         "event_from_user": tg(ORDINARY),
         "admin_grant": stray,
         "session": None,
@@ -201,7 +221,7 @@ async def test_the_middleware_does_not_trust_a_grant_for_someone_else() -> None:
 
 async def test_the_middleware_decides_alone_when_no_filter_ran() -> None:
     data: dict[str, Any] = {
-        "settings": tree_settings(),
+        "settings": tree_settings(emergency_admin_password_hash=EMERGENCY_HASH),
         "event_from_user": tg(ADMIN_ID),
         "session": None,
     }

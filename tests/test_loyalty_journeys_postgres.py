@@ -51,6 +51,7 @@ from app.repositories.admin_access_session import AdminAccessSessionRepository
 from app.services.localization import LocalizationService
 from app.services.loyalty import LoyaltyService
 from app.utils.cache import invalidate_categories_cache
+from app.utils.passwords import hash_password
 from app.verify_deployment import loyalty_health
 from tests.factories import make_user
 from tests.production_bot import ADMIN_ID, RunningBot, tree_settings
@@ -367,7 +368,10 @@ async def test_operators_confirming_credits_at_once_book_each_once(
             expires_at=now + timedelta(hours=1),
         )
         await session.commit()
-    bot = RunningBot(sessions, tree_settings())
+    bot = RunningBot(
+        sessions,
+        tree_settings(emergency_admin_password_hash=hash_password("operator on call", log_n=10)),
+    )
 
     async def to_confirmation(operator: int, amount: str) -> str:
         await bot.send(operator, "/admin_adjust_stamps")

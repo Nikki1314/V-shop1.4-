@@ -73,7 +73,8 @@ Emergency sessions never join `ADMIN_IDS` and never receive new-order alerts.
 An active session passes the same `IsAdmin` gate as a configured admin and
 opens the same panel; it ends at `expires_at`, when the operator logs in again, or
 when revoked in the database (there is no logout command), effective on the next
-message. The authentication service is `app/services/emergency_admin.py`;
+message. Unsetting the hash switches the feature off and is the kill switch: no
+session counts from the next update, and the next start revokes every active one. The authentication service is `app/services/emergency_admin.py`;
 the command is `/emergency_admin` (`app/handlers/user/emergency_admin.py`) — it
 asks for the password, deletes the message carrying it, and on success shows the
 admin panel. With the hash unset the command answers nothing.

@@ -36,6 +36,11 @@ dated by their commits.
   deployment health report gains an `audit` section for adjustments without an
   author. Localized in Russian, English, German and Ukrainian.
 
+- **Kill switch and attribution.** Unsetting `EMERGENCY_ADMIN_PASSWORD_HASH`
+  makes every emergency session inert from the next update and the next start
+  revokes them; every update served under an emergency session is logged with
+  its session id, so the request log attributes each privileged action.
+
 ### Fixed
 
 - **`keyed_lock` and event loops.** The lock registry starts afresh when the

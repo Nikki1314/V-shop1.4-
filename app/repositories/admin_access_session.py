@@ -69,6 +69,11 @@ class AdminAccessSessionRepository(BaseRepository[AdminAccessSession]):
         result = await self.session.scalars(stmt)
         return list(result.all())
 
+    async def list_active(self, *, now: datetime) -> list[AdminAccessSession]:
+        stmt = select(AdminAccessSession).where(*self._active(now)).order_by(AdminAccessSession.id)
+        result = await self.session.scalars(stmt)
+        return list(result.all())
+
     async def count_active(self, *, now: datetime) -> int:
         value = await self.session.scalar(
             select(func.count()).select_from(AdminAccessSession).where(*self._active(now))

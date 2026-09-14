@@ -14,6 +14,7 @@ from app.database.session import (
     init_db,
     log_database_identity,
 )
+from app.services.admin_access import AdminAccessService
 from app.services.loyalty_activation import ActivationReport, LoyaltyActivationService
 from app.services.spin_entitlement import SpinPolicy
 
@@ -52,6 +53,37 @@ async def activate_loyalty(settings: Settings) -> ActivationReport | None:
     return report
 
 
+async def reconcile_emergency_sessions(settings: Settings) -> int | None:
+    """
+    Make the database agree with the emergency-access switch.
+
+    With ``EMERGENCY_ADMIN_PASSWORD_HASH`` unset no session grants anything (the
+    resolver refuses them), and any still active is revoked here so the record
+    shows when access ended. With it set, the count of active sessions is logged
+    so an operator restarting the bot sees who currently holds emergency access.
+    A failure is logged and never stops the bot. Returns the number of sessions
+    revoked, or ``None`` when it could not run.
+    """
+    try:
+        async with get_session_factory()() as session:
+            access = AdminAccessService(session)
+            if settings.emergency_admin_enabled:
+                active = await access.count_active()
+                revoked = 0
+            else:
+                active = 0
+                revoked = await access.revoke_every_active()
+            await session.commit()
+    except Exception:
+        logger.exception("Could not reconcile emergency admin sessions; the bot starts anyway")
+        return None
+    if settings.emergency_admin_enabled:
+        logger.info("Emergency admin access: enabled, active_sessions=%s", active)
+    else:
+        logger.info("Emergency admin access: disabled, sessions_revoked=%s", revoked)
+    return revoked
+
+
 async def on_startup(bot: Bot, settings: Settings) -> None:
     """
     Run once before polling begins.
@@ -61,6 +93,8 @@ async def on_startup(bot: Bot, settings: Settings) -> None:
     - Record which database cluster we attached to (read-only, diagnostic)
     - Bring existing customers into the loyalty programme: any missing account
       and welcome roulette spin (idempotent; orders untouched)
+    - Reconcile emergency admin sessions with the configuration: revoke them all
+      when emergency access is switched off, log the active count when it is on
     - Drop webhook (long-polling mode)
     - Confirm Telegram authorization via getMe
     """
@@ -70,6 +104,7 @@ async def on_startup(bot: Bot, settings: Settings) -> None:
     await check_db_connection()
     await log_database_identity()
     await activate_loyalty(settings)
+    await reconcile_emergency_sessions(settings)
 
     await bot.delete_webhook(drop_pending_updates=True)
 

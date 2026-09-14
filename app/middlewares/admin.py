@@ -46,6 +46,15 @@ class AdminOnlyMiddleware(BaseMiddleware):
             logger.warning("Blocked non-admin access to admin router user_id=%s", user_id)
             return None
 
+        if grant.is_break_glass:
+            # Every privileged action taken under an emergency session is on
+            # record with the session that authorized it — ids only, never text.
+            logger.info(
+                "Break-glass admin update user_id=%s session_id=%s event=%s",
+                grant.telegram_id,
+                grant.session_id,
+                type(event).__name__,
+            )
         data["is_admin"] = True
         data["admin_grant"] = grant
         return await handler(event, data)

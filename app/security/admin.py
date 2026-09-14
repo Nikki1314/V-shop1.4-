@@ -80,13 +80,16 @@ async def resolve_admin_grant(
 
     Configured admins need no database. Everyone else needs an active session,
     which needs a database session to read — without one (a path that runs
-    before ``DatabaseMiddleware``) the answer is *no*: it fails closed.
+    before ``DatabaseMiddleware``) the answer is *no*: it fails closed. With
+    emergency access switched off (no ``EMERGENCY_ADMIN_PASSWORD_HASH``) no
+    session counts, whatever the table holds: unsetting the hash is the kill
+    switch, effective on the next update.
     """
     if user is None:
         return None
     if is_admin_id(user.id, settings):
         return AdminGrant(telegram_id=user.id, kind=AdminAccessKind.CONFIGURED)
-    if session is None:
+    if session is None or not settings.emergency_admin_enabled:
         return None
     access = await AdminAccessService(session, clock=clock).active_session(user.id)
     if access is None:
