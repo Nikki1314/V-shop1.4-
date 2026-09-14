@@ -225,6 +225,10 @@ their statuses, historical totals, and the rendered statistics dashboard. Its
   opened when a user first registers, the welcome spin at `/start`, and every
   bot start backfills anyone still missing either, so after a start both counts
   are `0` (the welcome-spin count only while `ROULETTE_INITIAL_FREE_SPIN` is on).
+- `audit` — `adjustment` ledger rows without a `loyalty_stamp_adjustments`
+  author row. Credits made through the admin panel always have one; a direct
+  `LoyaltyService.adjust` (tests, a data migration) does not, so the count is
+  reported rather than treated as corruption — in production it should stay `0`.
 
 ## Safe operations
 

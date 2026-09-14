@@ -74,7 +74,7 @@ transaction as the order event that earned them.
 - Information pages (delivery, payment, contacts), an invite link to a private
   reviews group, and language or city changes at any time
 
-**Admins** (`/admin`, `ADMIN_IDS` only, private chats only)
+**Admins** (`/admin`; `ADMIN_IDS`, or a temporary emergency session; private chats only)
 - Products: add (four languages, category and brand), edit, change price or
   description, enable/disable, delete (refused when the product has order history)
 - Categories and brands: create, rename per language, activate, reorder, delete,
@@ -85,6 +85,12 @@ transaction as the order event that earned them.
   month, plus best- and worst-selling products, with month boundaries in the
   shop's time zone
 - Broadcasts: text or photo to all customers, paced to Telegram's limits
+- 🪪 Loyalty: credit stamps to a customer by hand (`/admin_adjust_stamps`) —
+  through the stamp ledger, recorded with the operator as its author, confirmed
+  once, and silent: no message to the customer, none to the manager chat
+- Emergency access: `/emergency_admin` opens a time-boxed admin session for an
+  operator who is *not* in `ADMIN_IDS`, against a configured password hash, with
+  a lockout after repeated failures; it never adds anyone to `ADMIN_IDS`
 
 Details: [Admin guide](docs/admin-guide.md).
 
@@ -193,11 +199,14 @@ so concurrent admin taps apply once and notify the customer once.
 ## Security
 
 Admins are an allow-list of Telegram IDs that fails closed, behind two
-independent gates. Group chats are ignored. Callbacks carry bounded, validated ids
-only, and ownership is re-checked on the server and backed by composite foreign
-keys. Every user-supplied value is HTML-escaped. Secrets stay in `.env`, and SQL
-bound parameters never reach the logs. Rate limiting and container hardening are
-out of scope for now; the full model, including what is out of scope, is in
+independent gates; the same gates also admit a temporary emergency session,
+opened with `/emergency_admin` against a scrypt hash in configuration and locked
+out after repeated failures, expiring on its own and never touching `ADMIN_IDS`.
+Group chats are ignored. Callbacks carry bounded, validated ids only, and
+ownership is re-checked on the server and backed by composite foreign keys. Every
+user-supplied value is HTML-escaped. Secrets stay in `.env`, and SQL bound
+parameters never reach the logs. General rate limiting and container hardening
+are out of scope for now; the full model, including what is out of scope, is in
 [Security](docs/security.md).
 
 ## Persistence and database
@@ -214,7 +223,7 @@ never creates or deletes; see [Deployment](docs/deployment.md#where-the-data-liv
 
 ## Testing
 
-1,936 tests at the time of writing:
+2,266 tests at the time of writing:
 
 - unit, integration and end-to-end tests through the production dispatcher;
 - PostgreSQL concurrency and deployment suites;
@@ -222,7 +231,7 @@ never creates or deletes; see [Deployment](docs/deployment.md#where-the-data-liv
 - security, localization and documentation-drift tests.
 
 ```bash
-python -m pytest tests -q        # SQLite; the 39 PostgreSQL tests skip without a database
+python -m pytest tests -q        # SQLite; the 42 PostgreSQL tests skip without a database
 ```
 
 How to run the PostgreSQL suites, and the full quality gate:
@@ -329,25 +338,29 @@ the catalog looks empty, and a production checklist:
 │   ├── config.py              # Pydantic Settings: every environment variable
 │   ├── check_startup.py       # startup smoke check without polling
 │   ├── verify_deployment.py   # read-only post-deploy report and loyalty integrity checks
+│   ├── hash_emergency_password.py  # operator tool: the emergency password → its hash for .env
 │   ├── handlers/
-│   │   ├── user/              # start, catalog, cart, checkout, stamp_card, roulette, invite, info
+│   │   ├── user/              # start, emergency_admin, catalog, cart, checkout, stamp_card,
+│   │   │                      # roulette, invite, info
 │   │   ├── admin/             # panel, products, product_manage, categories, subcategories,
-│   │   │                      # orders, broadcast, statistics, settings, wizard_guard
+│   │   │                      # orders, broadcast, statistics, loyalty, settings, wizard_guard
 │   │   └── fallback.py        # answers buttons that outlived their screen
 │   ├── middlewares/           # request log, private-chat gate, errors, DB session, i18n, admin gate
 │   ├── services/              # business rules: order, cart, catalog, admin, statistics,
 │   │                          # loyalty, stamp_card, reward, roulette, roulette_engine,
-│   │                          # spin_entitlement, referral, referral_program, notifications
+│   │                          # spin_entitlement, referral, referral_program, notifications,
+│   │                          # admin_access (sessions), emergency_admin (authentication)
 │   ├── repositories/          # data access per aggregate; visibility.py = the "on sale" rule
 │   ├── models/                # SQLAlchemy models and enums
 │   ├── keyboards/             # keyboards and CALLBACK_* constants
 │   ├── states/                # FSM state groups
 │   ├── locales/               # four JSON catalogs with identical key sets
-│   ├── utils/                 # validators, HTML escaping, i18n, display helpers, locks, cache
+│   ├── utils/                 # validators, HTML escaping, i18n, display helpers, locks, cache,
+│   │                          # password hashing (scrypt)
 │   ├── errors/                # exception classification and safe user messages
-│   ├── filters/, security/    # admin and localized-button filters, admin id checks
+│   ├── filters/, security/    # admin and localized-button filters; the one admin-access decision
 │   └── database/              # async engine and session factory
-├── alembic/                   # migrations (nine, linear)
+├── alembic/                   # migrations (twelve, linear)
 ├── tests/                     # pytest suite; production_bot.py drives the real dispatcher
 ├── docs/                      # architecture, loyalty, roulette, referrals, database, …
 ├── docker/ca-certificates/    # optional build-time CA for TLS-intercepting networks
@@ -393,8 +406,8 @@ The full table: [Architecture](docs/architecture.md#design-decisions-and-trade-o
 | Single bot instance | shared FSM storage and distributed locks would be needed to run replicas |
 | No hosted CI | the quality gate runs locally; running it in a hosted CI service is the obvious next step |
 | No automated backups or monitoring | backups are a documented manual procedure; logs only |
-| No per-user rate limiting | broadcasts are paced; incoming updates are not throttled |
-| ⚙ Settings is a placeholder | configuration is environment-only; no admin screen for loyalty balances |
+| No general per-user rate limiting | broadcasts are paced; incoming updates are not throttled — except emergency logins, which lock an account out after repeated failures |
+| ⚙ Settings is a placeholder | configuration is environment-only; loyalty balances are read on the customer's card, and the only loyalty action in the panel is crediting stamps |
 | Amounts on shop screens | the product card, cart and checkout show plain decimals; loyalty and statistics screens use locale-aware currency formatting |
 | Admin "Edit description" | covers Russian, English and German; the Ukrainian description is changed through the full Edit wizard |
 | Updates while offline | messages sent while the bot is down are dropped at the next start |
@@ -412,9 +425,9 @@ The full table: [Architecture](docs/architecture.md#design-decisions-and-trade-o
 | [Referrals](docs/referrals.md) | links, attribution, payout, abuse resistance |
 | [Database schema](docs/database-schema.md) | tables, constraints, indexes, auditability |
 | [Deployment](docs/deployment.md) | production runbook, persistence, backups, recovery |
-| [Security](docs/security.md) | security model and its limits |
+| [Security](docs/security.md) | security model and its limits, emergency access, manual stamp credits |
 | [Testing](docs/testing.md) | test layers, PostgreSQL suites, quality gate |
-| [Admin guide](docs/admin-guide.md) | operating the shop from Telegram |
+| [Admin guide](docs/admin-guide.md) | operating the shop from Telegram, emergency access, crediting stamps |
 | [Changelog](CHANGELOG.md) | release history |
 
 ## License

@@ -128,4 +128,4 @@ for those, the quality gate, and what each test layer covers.
 | `BOT_TOKEN` rejected | Invalid/revoked token or placeholder left in `.env` |
 | Cannot connect to database | Wrong `DATABASE_URL`, Postgres not running, or Windows host networking issues — prefer Docker DB |
 | TLS / SSL errors to Telegram | Corporate proxy: set `TELEGRAM_SSL_VERIFY=false` **only for local debugging** |
-| Bot starts but `/admin` denied | Your Telegram ID is missing from `ADMIN_IDS` |
+| Bot starts but `/admin` denied | Your Telegram ID is missing from `ADMIN_IDS` (an operator with `EMERGENCY_ADMIN_PASSWORD_HASH` configured can use `/emergency_admin` instead — see the [admin guide](admin-guide.md#access)) |

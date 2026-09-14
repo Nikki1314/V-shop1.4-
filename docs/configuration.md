@@ -46,8 +46,9 @@ Admin IDs also receive new-order notifications in private chat (deduplicated wit
 
 ## Emergency admin access
 
-Break-glass access for an operator whose Telegram ID is *not* in `ADMIN_IDS`.
-All optional; the feature is **off** until the hash is set.
+Controlled break-glass access for an operator whose Telegram ID is *not* in
+`ADMIN_IDS`: password-checked, rate-limited, time-boxed, recorded, and never a
+change to `ADMIN_IDS`. All optional; the feature is **off** until the hash is set.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
@@ -70,8 +71,9 @@ wrong password; the attempts and the sessions they open are recorded in
 `admin_access_attempts` and `admin_access_sessions` ([Database schema](database-schema.md#admin-access)).
 Emergency sessions never join `ADMIN_IDS` and never receive new-order alerts.
 An active session passes the same `IsAdmin` gate as a configured admin and
-opens the same panel; it ends at `expires_at` or when revoked, effective on the
-next message. The authentication service is `app/services/emergency_admin.py`;
+opens the same panel; it ends at `expires_at`, when the operator logs in again, or
+when revoked in the database (there is no logout command), effective on the next
+message. The authentication service is `app/services/emergency_admin.py`;
 the command is `/emergency_admin` (`app/handlers/user/emergency_admin.py`) — it
 asks for the password, deletes the message carrying it, and on success shows the
 admin panel. With the hash unset the command answers nothing.

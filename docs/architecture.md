@@ -45,19 +45,19 @@ do not build queries themselves.
 | `app/handlers/` | aiogram routers: parse updates, drive FSM, call services, render screens |
 | `app/keyboards/` | reply / inline keyboard builders and the `CALLBACK_*` constants |
 | `app/middlewares/` | cross-cutting: request log, private-chat gate, error handling, session lifecycle, localization, admin gate |
-| `app/filters/` | `IsAdmin`, `LocalizedText` (menu buttons matched in every language) |
-| `app/services/` | use cases: catalog, cart, order, admin façade, broadcast, notifications, statistics, loyalty, roulette, rewards, referrals |
+| `app/filters/` | `IsAdmin` / `IsNotAdmin` (`ADMIN_IDS` or an active emergency session), `LocalizedText` (menu buttons matched in every language) |
+| `app/services/` | use cases: catalog, cart, order, admin façade (catalog, orders, users and customer lookup, manual stamp credits), broadcast, notifications, statistics, loyalty, roulette, rewards, referrals, emergency admin sessions and authentication |
 | `app/repositories/` | CRUD and query helpers per aggregate; `visibility.py` holds the single "on sale" rule |
 | `app/models/` | SQLAlchemy ORM models and domain enums |
 | `app/states/` | FSM `StatesGroup` definitions (onboarding, checkout, admin wizards) |
 | `app/locales/` | four JSON catalogs with identical key sets |
-| `app/utils/` | validators, HTML escaping, i18n helpers, display helpers, locks, cache, Telegram UI helpers |
+| `app/utils/` | validators, HTML escaping, i18n helpers, display helpers, locks, cache, Telegram UI helpers, password hashing |
 | `app/errors/` | classify exceptions → safe localized user messages |
-| `app/security/` | admin id checks |
+| `app/security/` | the one admin-access decision: `resolve_admin_grant` — `ADMIN_IDS` from settings, or an active break-glass session from the database |
 | `app/database/` | engine and session factory (`hide_parameters=True`) |
 | `app/config.py` | Pydantic Settings — every environment variable |
 | `app/bot.py`, `app/main.py`, `app/lifecycle.py` | bot and dispatcher factories, process entry point, startup / shutdown hooks |
-| `app/check_startup.py`, `app/verify_deployment.py` | startup smoke check; read-only post-deploy report |
+| `app/check_startup.py`, `app/verify_deployment.py`, `app/hash_emergency_password.py` | startup smoke check; read-only post-deploy report; the operator's password-hash tool |
 
 ## Middleware order
 
@@ -114,6 +114,8 @@ follow a durable write:
 | `/start` | the first reply, and telling a referrer that a friend joined |
 | 👥 Invite a Friend | sending the screen with a newly created link |
 | Broadcast confirm | the long Telegram fan-out |
+| `/emergency_admin` password step | answering — the attempt and any new session are durable, and the user-row lock released, before the operator hears anything |
+| 🪪 Loyalty credit confirm | answering the operator — the ledger row and its author row are committed inside `confirm_once`, so the account lock never spans a Telegram call |
 
 The rule behind these: **never await Telegram while holding a loyalty lock** — or
 any row lock. A refusal (a checkout step that cannot proceed, a refused claim, an
@@ -126,6 +128,7 @@ commit only reads, without locks.
 root
 ├── user router
 │   ├── start           /start, onboarding, referral links
+│   ├── emergency_admin /emergency_admin: password step, then the existing panel
 │   ├── catalog, cart
 │   ├── stamp_card      🪪 My Stamp Card
 │   ├── roulette        🎰 Lucky Roulette
@@ -133,7 +136,7 @@ root
 │   ├── checkout        FSM (after the loyalty menus, so their buttons win over free-text steps)
 │   ├── info            information pages, language and city, reviews
 │   └── admin_guard     /admin access denied for non-admins
-├── admin router        (IsAdmin filter + AdminOnlyMiddleware)
+├── admin router        (IsAdmin filter + AdminOnlyMiddleware: ADMIN_IDS or an active emergency session)
 │   ├── wizard_guard    blocks menu jumps while a wizard is active
 │   ├── products        add-product wizard
 │   ├── product_manage  list, view, edit, enable/disable, delete
@@ -142,6 +145,7 @@ root
 │   ├── orders
 │   ├── broadcast
 │   ├── statistics
+│   ├── loyalty         🪪 Loyalty: /admin_adjust_stamps, the stamp-credit wizard
 │   ├── settings
 │   └── panel           /admin
 └── fallback            answers buttons nothing above handled; admin buttons excluded
@@ -380,11 +384,55 @@ in anything sent to a user. Links are cached in-process for an hour.
 - `AdminCatalogService` — categories, brands and products
 - `AdminOrderService` — order queries and status changes (including the
   loyalty booking on completion)
-- `AdminUserService` — broadcast recipient IDs
+- `AdminUserService` — broadcast recipient IDs, and finding one customer by
+  Telegram id or `@username` (`resolve_customer`)
+- `AdminLoyaltyService` — manual stamp credits through the ledger, with an
+  author row per credit (`credit_stamps`)
 
 The status-change handler builds `AdminService(session, settings=settings)`, so
 completion applies the configured loyalty rules; `tests/test_stamp_card.py` pins
 that. New code uses the focused services.
+
+## Emergency access and manual stamp credits
+
+Two administrative capabilities sit on the layers above without adding a second
+panel or a second balance.
+
+**Who may use the admin router** is decided by one function,
+`resolve_admin_grant` (`app/security/admin.py`): a Telegram id in `ADMIN_IDS` is
+granted from settings alone; anyone else only by an `admin_access_sessions` row
+that is neither revoked nor expired, read from the database on every update.
+The admin router's `IsAdmin` filter makes that decision once and hands it on as
+`admin_grant`; `AdminOnlyMiddleware` reuses it; the user router's `IsNotAdmin`
+negates it for the `/admin` denial. No handler checks access itself.
+
+**How a session comes to exist**: `/emergency_admin` (user router) asks for the
+password, deletes the message that carried it and hands it to
+`EmergencyAdminAuthService`, which checks it against `EMERGENCY_ADMIN_PASSWORD_HASH`
+(scrypt, constant-time, in a worker thread), records the attempt in
+`admin_access_attempts`, locks the account out after
+`EMERGENCY_ADMIN_MAX_FAILED_ATTEMPTS` failures for `EMERGENCY_ADMIN_LOCKOUT_MINUTES`,
+and on success opens one session lasting `EMERGENCY_ADMIN_SESSION_TTL_MINUTES`
+through `AdminAccessService`, revoking the user's earlier one. Every denial is
+answered with the non-admin's "Access denied"; with the hash unset the command
+is silent. A session never changes `ADMIN_IDS`, expires on its own, and is a
+row that stays on record — the audit trail of who held admin rights and when.
+
+**How stamps are credited by hand**: the 🪪 Loyalty wizard (admin router) names
+the customer through `AdminUserService.resolve_customer` — a Telegram id
+exactly, or a `@username` matched against the stored handle and refused when
+missing or shared — shows their card, takes a whole number up to
+`LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`, and confirms with a button that carries
+only a fresh operation id. The tap runs `AdminLoyaltyService.credit_stamps`
+inside `confirm_once`: it re-resolves the customer by id, locks the account,
+returns the credit already booked under that operation id if there is one, or
+writes one `adjustment` ledger row through `LoyaltyService.adjust` and one
+`loyalty_stamp_adjustments` author row (operator, authority, session, operation
+id) in the same transaction, committed before the operator is answered. A credit
+issues no reward and counts no purchase — a full card is claimed by the customer
+exactly as after a purchase — and sends nothing to the customer, the manager chat
+or the admins. Details: [Security](security.md), [Loyalty](loyalty.md#the-stamp-ledger),
+[Admin guide](admin-guide.md#loyalty).
 
 ## Localization
 
@@ -477,3 +525,5 @@ tests — see [Testing](testing.md).
 | Enums stored by value as `VARCHAR` | adding a value needs no migration | the database does not constrain plain enum columns |
 | English manager alerts | one shared chat, one parseable format | not localized |
 | Documentation facts pinned by tests | docs cannot silently drift from code | docs change together with the code |
+| Emergency sessions as database rows, never as `ADMIN_IDS` entries | a break-glass grant is time-boxed, revocable and on record; the permanent allow-list is never edited by the bot | one indexed query per update from a user outside `ADMIN_IDS` that reaches the admin router |
+| Manual credits through the ledger with an author row | the stamps take the same path and locks as every other movement, and every credit names who made it and under which authority | an operation id per confirmation screen, so a repeat is the same credit |

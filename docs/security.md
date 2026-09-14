@@ -12,6 +12,7 @@ manipulate from a Telegram client.
 |---|---|---|
 | Customer | untrusted — every message and callback is input | private chat with the bot |
 | Admin | trusted, identified by Telegram user id (`ADMIN_IDS`) | private chat, `/admin` |
+| Emergency operator | trusted for one session, identified by Telegram user id plus the emergency password (`EMERGENCY_ADMIN_PASSWORD_HASH`); never added to `ADMIN_IDS` | private chat, `/emergency_admin`, then the same `/admin` panel |
 | Manager / reviews groups | notification targets only | outbound messages, no commands, no buttons |
 | Operator / host | trusted | `.env`, Docker, PostgreSQL |
 | Telegram | trusted for user identity and transport | Bot API over HTTPS (long polling) |
@@ -29,7 +30,8 @@ manipulate from a Telegram client.
   `EMERGENCY_ADMIN_LOCKOUT_MINUTES` — answered like any other failure. Neither
   table holds a credential. `/emergency_admin` (`app/handlers/user/emergency_admin.py`)
   asks for the password (or takes it from `/emergency_admin <password>`),
-  deletes the message that carried it, commits the
+  deletes the message that carried it (best effort — Telegram and the operator's
+  device may already have shown it, hence the advice to rotate after use), commits the
   attempt before answering, and answers every denial with the non-admin's
   "Access denied"; with the hash unset it says nothing. The command performs no
   admin operation: a success only shows the panel, and every later tap passes
@@ -40,7 +42,9 @@ manipulate from a Telegram client.
   the one decision: a configured id is granted from settings alone, without a
   query; anyone else only by an `admin_access_sessions` row that is neither
   revoked nor expired, read on every update, so revocation and expiry take effect
-  on the next message. Without a database session the answer is *no*. A grant
+  on the next message. A session ends by expiry, by the operator logging in again
+  (which supersedes it) or by revocation in the database; the bot offers no logout
+  command. Without a database session the answer is *no*. A grant
   changes nothing in `ADMIN_IDS` and opens the same panel and handlers, and the
   handler receives it as `admin_grant` so an action can be attributed to the
   session that authorized it.
@@ -103,6 +107,36 @@ Telegram that rejects invalid HTML.
 Details: [Architecture](architecture.md#loyalty-transactions-and-concurrency),
 [Loyalty](loyalty.md), [Roulette](roulette.md), [Referrals](referrals.md).
 
+## Manual stamp credits
+
+- **Who.** The 🪪 Loyalty wizard lives inside the admin router, so only a
+  configured admin or an active emergency session reaches it; a stranger's
+  `/admin_adjust_stamps` or copied button is dropped without an answer. The
+  `admin_grant` the router injects is recorded on every credit's author row.
+- **Whom.** The customer is named by Telegram id (exact) or `@username`
+  (case-insensitive, against the handle the customer last showed the bot,
+  refused when missing or stored for several customers), resolved on the server
+  and re-resolved by id right before booking. An operator cannot credit
+  themselves.
+- **How much.** A whole number from 1 to `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`,
+  validated at the step and again by the service; nothing negative, nothing zero.
+- **The button.** The confirmation carries only a fresh operation id; the
+  customer and the amount live in the operator's server-side FSM data. A second
+  tap, two taps at once, an earlier screen's button, a forged id, another
+  operator's copied button or a screen that outlived a restart credits nothing.
+- **The write.** One `adjustment` ledger row through `LoyaltyService.adjust`
+  under the customer's account lock, plus one `loyalty_stamp_adjustments`
+  author row, in one transaction, committed before the operator is answered;
+  the operation id is unique, so the same request booked twice is one credit.
+  A credit never mints a reward and never counts as a purchase.
+- **Silence.** No message to the customer, none to the manager chat, none to
+  the other admins: the customer sees the stamps on their card. The sender
+  modules state this and `tests/test_adjustment_notifications.py` proves it.
+- **Audit.** Every credit is explainable from the ledger row and its author row
+  (operator, `configured` or `break_glass`, session id, operation id, time);
+  `python -m app.verify_deployment` reports adjustment rows without an author
+  and author rows that disagree with their ledger row.
+
 ## Referral tokens
 
 Codes are 72-bit random values (`secrets.token_urlsafe(9)`), not derived from any
@@ -150,5 +184,7 @@ only). The bot container reaches the database as `db:5432`.
 
 `tests/test_security_audit.py`, `tests/test_group_isolation_security.py`,
 `tests/test_private_chat_isolation.py`, `tests/test_loyalty_attacks.py`,
-`tests/test_html_escaping.py` and `tests/test_admin_guards.py`. See
-[Testing](testing.md).
+`tests/test_html_escaping.py`, `tests/test_admin_guards.py`,
+`tests/test_admin_authorization.py`, `tests/test_emergency_admin_security.py`,
+`tests/test_admin_stamp_wizard_security.py` and
+`tests/test_adjustment_notifications.py`. See [Testing](testing.md).

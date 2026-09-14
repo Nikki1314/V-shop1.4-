@@ -204,6 +204,9 @@ erDiagram
     USERS ||--o{ REFERRALS : refers
     USERS ||--o| REFERRALS : "was referred"
     ORDERS ||--o| REFERRALS : qualifies
+    LOYALTY_TRANSACTIONS ||--o| LOYALTY_STAMP_ADJUSTMENTS : "author of a manual credit"
+    USERS ||--o{ LOYALTY_STAMP_ADJUSTMENTS : "credited by (operator)"
+    ADMIN_ACCESS_SESSIONS ||--o{ LOYALTY_STAMP_ADJUSTMENTS : "under a break-glass session"
 ```
 
 Two rules hold the design together:

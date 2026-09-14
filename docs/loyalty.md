@@ -99,15 +99,18 @@ is a cache written in the same flush as each ledger row.
   [Auditability](#auditability)).
 
 The ledger also supports signed `adjustment` rows with a mandatory note
-(`LoyaltyService.adjust`). Operators credit stamps through
+(`LoyaltyService.adjust`) — the ledger's form of an administrative adjustment,
+and the only kind an operator can write. Operators credit stamps through
 `AdminLoyaltyService.credit_stamps` (`app/services/admin/loyalty.py`): positive
 whole numbers only, at most `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT` per credit, with a
 reason that becomes the row's note. Each credit also writes a
 `loyalty_stamp_adjustments` row — the operator, whether they acted as a
 configured admin or under a break-glass session, and a caller-supplied
 operation id that makes a repeated request the same credit rather than a second
-one. A credit never issues a reward, never counts as a purchase and never sends a
-message: crossing the threshold means what it means after a purchase — the
+one. A credit never issues a reward and never counts as a purchase, and it sends
+nothing — no message to the customer, none to the manager chat, none to the other
+admins; the customer sees the stamps on their card. Crossing the threshold means
+what it means after a purchase — the
 customer claims the free bottle on their card. Operators reach it through
 🪪 Loyalty in the admin panel or `/admin_adjust_stamps`
 (`app/handlers/admin/loyalty.py`: customer, amount, confirm; the confirm button
@@ -232,6 +235,8 @@ part of the [deployment verification](deployment.md#verifying-a-deploy).
 | `tests/test_loyalty_ledger.py` | ledger invariants, refusals |
 | `tests/test_free_bottle.py`, `tests/test_rewards_and_referrals.py` | planning and redeeming rewards |
 | `tests/test_loyalty_scenarios.py` | the owner's acceptance scenarios; account lock before first write |
-| `tests/test_loyalty_postgres.py` | concurrent claims, redemptions and checkouts on PostgreSQL |
+| `tests/test_loyalty_postgres.py` | concurrent claims, redemptions, checkouts and manual credits on PostgreSQL |
+| `tests/test_admin_stamp_adjustment.py`, `tests/test_customer_resolution.py` | manual credits: validation, idempotency, the author row; naming the customer |
+| `tests/test_admin_stamp_wizard.py`, `tests/test_admin_stamp_wizard_security.py`, `tests/test_adjustment_notifications.py` | the 🪪 Loyalty wizard end to end, attacked, and silent |
 
 See [Testing](testing.md) for how to run them.

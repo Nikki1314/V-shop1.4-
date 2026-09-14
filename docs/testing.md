@@ -1,7 +1,7 @@
 # Testing
 
 The test suite is the project's main quality gate. At the time of writing it
-collects **1,936 tests**; 39 of them are PostgreSQL concurrency and deployment
+collects **2,266 tests**; 42 of them are PostgreSQL concurrency and deployment
 tests that run only when a scratch PostgreSQL database is provided.
 
 ## Tooling
@@ -23,13 +23,13 @@ configuration.
 
 | Layer | How it works | Examples |
 |---|---|---|
-| **Unit** | pure functions and services against in-memory SQLite | `test_validators.py`, `test_roulette_engine.py`, `test_loyalty_ledger.py` |
-| **Integration** | handlers called with spy Telegram objects, real services and database | `test_checkout_handlers.py`, `test_stamp_card_ui.py`, `test_admin_statistics.py` |
-| **End-to-end** | real Telegram updates fed through the **production dispatcher** — every middleware, filter, router and FSM state — with a fake Bot API session (`tests/production_bot.py`) | `test_loyalty_e2e_qa.py`, `test_loyalty_journeys.py`, `test_shop_lifecycle.py`, `test_loyalty_languages.py` |
+| **Unit** | pure functions and services against in-memory SQLite | `test_validators.py`, `test_roulette_engine.py`, `test_loyalty_ledger.py`, `test_password_hashing.py`, `test_admin_access_sessions.py`, `test_customer_resolution.py` |
+| **Integration** | handlers called with spy Telegram objects, real services and database | `test_checkout_handlers.py`, `test_stamp_card_ui.py`, `test_admin_statistics.py`, `test_emergency_admin_auth.py`, `test_admin_stamp_adjustment.py` |
+| **End-to-end** | real Telegram updates fed through the **production dispatcher** — every middleware, filter, router and FSM state — with a fake Bot API session (`tests/production_bot.py`) | `test_loyalty_e2e_qa.py`, `test_loyalty_journeys.py`, `test_shop_lifecycle.py`, `test_loyalty_languages.py`, `test_emergency_admin_command.py`, `test_admin_stamp_wizard.py`, `test_break_glass_stamp_integration.py` |
 | **Concurrency (PostgreSQL)** | real transactions racing each other; checks that no Bot API call is made while a loyalty lock is held | `test_loyalty_postgres.py`, `test_loyalty_journeys_postgres.py`, `test_loyalty_concurrency.py` |
 | **Deployment (PostgreSQL)** | the real migrations applied to a pre-loyalty shop, then redeploys and restarts; `alembic check` on the migrated schema | `test_loyalty_activation_postgres.py` |
 | **Migrations (static)** | `upgrade()` never drops or deletes — including through helpers, `batch_op`, `sa.text` and constants; linear single-headed chain; every model table migrated | `test_migrations.py`, `test_loyalty_schema.py` |
-| **Security** | callback parsing bounds, admin fail-closed, raw-SQL guards, `hide_parameters`, cross-customer access, HTML escaping, group isolation | `test_security_audit.py`, `test_group_isolation_security.py`, `test_private_chat_isolation.py`, `test_loyalty_attacks.py`, `test_html_escaping.py` |
+| **Security** | callback parsing bounds, admin fail-closed, raw-SQL guards, `hide_parameters`, cross-customer access, HTML escaping, group isolation, emergency-login brute force and session lifecycle, manual-credit tampering and notification silence | `test_security_audit.py`, `test_group_isolation_security.py`, `test_private_chat_isolation.py`, `test_loyalty_attacks.py`, `test_html_escaping.py`, `test_admin_authorization.py`, `test_emergency_admin_security.py`, `test_admin_stamp_wizard_security.py`, `test_adjustment_notifications.py` |
 | **Localization** | identical key sets, every template renders, formal address, consistent terminology, and every screen of the customer journey fits a phone in each language | `test_localization.py`, `test_localization_quality.py`, `test_translation_parity.py`, `test_ukrainian.py`, `test_loyalty_languages.py` |
 | **Documentation** | settings, tables, indexes, statuses, migrations and the middleware order must match these documents | `test_documentation.py` |
 
@@ -45,6 +45,15 @@ Worth knowing:
   `tests/test_loyalty_scenarios.py` and `tests/test_loyalty_guards.py` check that
   each loyalty path *asks* for its locks in the right order; only the PostgreSQL
   suites prove the locks *hold*.
+- SQLite's single in-memory connection cannot hold two transactions at once, so
+  races between *different* users through the dispatcher (two operators
+  crediting one customer, say) live in `tests/test_loyalty_journeys_postgres.py`.
+- `keyed_lock` starts its registry afresh whenever the running event loop
+  changes (`tests/test_keyed_lock_loops.py`): each test gets its own loop, and an
+  `asyncio.Lock` contended on one loop cannot be waited on from another.
+- `tests/test_break_glass_stamp_integration.py` runs on a file-backed SQLite so
+  it can close every connection mid-journey — a database restart, from the
+  bot's side — and prove sessions, lockouts and credits survive it.
 
 ## Running the tests
 

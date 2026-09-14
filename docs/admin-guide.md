@@ -36,12 +36,18 @@ and opens this same panel until it expires or is revoked; it never changes
 **Emergency access.** If your Telegram ID is not in `ADMIN_IDS` but the
 operator has set `EMERGENCY_ADMIN_PASSWORD_HASH`, send `/emergency_admin`, then
 the password as your next message, or in one line as `/emergency_admin <password>`
-(the bot deletes the message either way). A correct
+(the bot deletes that message — best effort: Telegram, and a notification on
+your phone, may already have shown it, so rotate the password after use). A correct
 password opens this same panel for `EMERGENCY_ADMIN_SESSION_TTL_MINUTES`; a wrong
 one is answered "Access denied", and repeated failures lock you out for
 `EMERGENCY_ADMIN_LOCKOUT_MINUTES`. Sending the command again later opens a new
-session. Emergency sessions never receive new-order alerts and never change
-`ADMIN_IDS`. See [Configuration](configuration.md#emergency-admin-access).
+session and ends the previous one. There is no logout command: a session ends
+when it expires, when you log in again, or when whoever runs the database
+revokes it. Emergency sessions never receive new-order alerts and never change
+`ADMIN_IDS` — nobody becomes a permanent administrator this way. Every attempt
+and every session is recorded (`admin_access_attempts`, `admin_access_sessions`)
+for whoever runs the database to review. See
+[Configuration](configuration.md#emergency-admin-access).
 
 **Wizards.** While a wizard is active (adding a product, renaming a category, a
 broadcast, …), tapping another admin menu button is blocked until you **Cancel**
@@ -183,7 +189,7 @@ There is nothing to operate by hand:
   checkout;
 - a reward used on an order that is later cancelled stays used (owner decision).
 
-**Crediting stamps by hand** (🪪 Loyalty → ➕ Credit stamps, or
+**Crediting stamps by hand — a manual loyalty adjustment** (🪪 Loyalty → ➕ Credit stamps, or
 `/admin_adjust_stamps`): send the customer's Telegram ID or `@username`; the bot
 shows who that is and their current stamps; send how many to add (a whole number,
 at most `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`); confirm. The credit is one ledger

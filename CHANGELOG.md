@@ -3,57 +3,45 @@
 Notable changes, newest first. The repository has no version tags; entries are
 dated by their commits.
 
-## Unreleased
+## 2026-09-14 — Emergency admin access and manual stamp credits
 
 ### Added
 
-- **Admin access sessions (persistence only).** `admin_access_sessions` holds
-  temporary, revocable admin grants — user, method (`break_glass`), `expires_at`,
-  `revoked_at` — behind `AdminAccessService`. Revocation is a timestamp, so the
-  table is its own audit trail. No credential is stored, nobody is added to
-  `ADMIN_IDS`, and no command or authorization path uses it yet. Migration
-  `d7a3f9c2e8b1`; its downgrade refuses while sessions exist.
-- **Emergency admin authentication (service only).** `EmergencyAdminAuthService`
-  checks a password against `EMERGENCY_ADMIN_PASSWORD_HASH` (scrypt, a `$`-free PHC-style string,
-  made with `python -m app.hash_emergency_password`; verified in constant time in a worker
-  thread), refuses empty credentials, locks a user out after
-  `EMERGENCY_ADMIN_MAX_FAILED_ATTEMPTS` failures for
-  `EMERGENCY_ADMIN_LOCKOUT_MINUTES`, and on success opens one session lasting
-  `EMERGENCY_ADMIN_SESSION_TTL_MINUTES`, revoking the user's earlier one. Every
-  attempt is recorded in `admin_access_attempts` (migration `e8b2c4d6f1a3`, guarded
-  downgrade); no credential is ever stored or logged.
-- **`/emergency_admin`.** Asks for the password, deletes the message that carried
-  it, checks it through the service, and on success shows the existing admin
-  panel; every denial reads like a non-admin's `/admin`, and with the hash unset
-  the command is silent. Localized in Russian, English, German and Ukrainian.
-- **Emergency sessions authorize the admin panel.** `resolve_admin_grant` decides
-  admin access once for `IsAdmin`, `IsNotAdmin` and `AdminOnlyMiddleware`:
-  `ADMIN_IDS` from settings alone, as before, or an active break-glass session read
-  on every update. Handlers receive the decision as `admin_grant`; expiry and
-  revocation take effect on the next message; `ADMIN_IDS` is never changed.
+- **Emergency (break-glass) admin access.** `/emergency_admin` asks an operator
+  who is not in `ADMIN_IDS` for a password, deletes the message that carried it,
+  and checks it against `EMERGENCY_ADMIN_PASSWORD_HASH` — an scrypt hash made with
+  `python -m app.hash_emergency_password` (twelve characters or more), verified
+  in constant time in a worker thread. Success opens one session lasting
+  `EMERGENCY_ADMIN_SESSION_TTL_MINUTES` (`admin_access_sessions`, migration
+  `d7a3f9c2e8b1`), revoking the operator's earlier one; every attempt is recorded
+  (`admin_access_attempts`, migration `e8b2c4d6f1a3`) and after
+  `EMERGENCY_ADMIN_MAX_FAILED_ATTEMPTS` failures the account is locked out for
+  `EMERGENCY_ADMIN_LOCKOUT_MINUTES`. Every denial reads like a non-admin's
+  `/admin`; with the hash unset the command is silent. No credential is stored or
+  logged, and `ADMIN_IDS` is never changed.
+- **Centralized authorization.** `resolve_admin_grant` decides admin access once
+  for `IsAdmin`, `IsNotAdmin` and `AdminOnlyMiddleware`: `ADMIN_IDS` from settings
+  alone, as before, or an active emergency session read on every update — so
+  expiry and revocation take effect on the next message. Handlers receive the
+  decision as `admin_grant` and never check access themselves.
+- **🪪 Loyalty: manual stamp credits.** `/admin_adjust_stamps` or the new panel
+  button: the customer by Telegram ID or `@username` (case-insensitive, refused
+  when missing or shared), their card with the current stamps, a whole number up
+  to `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`, then a confirmation whose button
+  carries only an operation id. The credit is one `adjustment` row through the
+  existing ledger plus a `loyalty_stamp_adjustments` author row (operator,
+  authority, session, operation id; migration `f3c7a1d9e2b5`), booked once per
+  screen however often it is tapped. It issues no reward, counts no purchase and
+  sends no message to the customer, the manager chat or the admins; the
+  deployment health report gains an `audit` section for adjustments without an
+  author. Localized in Russian, English, German and Ukrainian.
 
-- **Manual stamp credits (service only).** `AdminLoyaltyService.credit_stamps`
-  adds a positive number of stamps (at most `LOYALTY_ADMIN_MAX_STAMP_ADJUSTMENT`)
-  through the existing ledger (`adjustment` row, reason as note, account lock),
-  records the operator, their authority and a caller-supplied operation id in
-  `loyalty_stamp_adjustments` (migration `f3c7a1d9e2b5`, guarded downgrade), and is
-  idempotent per operation id. It issues no reward, counts no purchase and sends
-  nothing; the deployment health report counts adjustments without an author
-  (expected 0 in production) and flags author rows that disagree with their
-  ledger row. `AdminUserService.resolve_customer` names the target: a Telegram
-  id exactly, or a `@username` / `t.me/` link matched case-insensitively and
-  refused when missing or stored for more than one customer.
-- **Hash tool minimum length.** `python -m app.hash_emergency_password` refuses a
-  password shorter than twelve characters; verification itself is unchanged.
-- **`keyed_lock` and event loops.** The lock registry starts afresh when the running
-  event loop changes, so a key contended in one test's loop is never handed to the
-  next test as a lock it cannot wait on. No behaviour change for the bot, which
-  runs one loop for its whole life.
-- **🪪 Loyalty in the admin panel.** `/admin_adjust_stamps` or the new menu button:
-  customer (Telegram ID or `@username`), a card with their current stamps, the
-  amount, a confirmation whose button carries only an operation id, then the credit
-  through the service — once per screen, whatever is tapped twice, at once, late or
-  by someone else. Localized in Russian, English, German and Ukrainian.
+### Fixed
+
+- **`keyed_lock` and event loops.** The lock registry starts afresh when the
+  running event loop changes, so a key contended in one test's loop is never
+  handed to the next test as a lock it cannot wait on. No behaviour change for
+  the bot, which runs one loop for its whole life.
 
 ## 2026-09-12 — Loyalty, roulette and referral release
 
