@@ -356,7 +356,7 @@ repeated request the same credit.
 
 CHECK: `(actor_kind = 'break_glass') = (access_session_id IS NOT NULL)`; `user_id <> actor_user_id`.
 
-Indexes: composite `(user_id, id)` — a customer's manual credits, newest first; unique `transaction_id`, unique `operation_id`.
+Indexes: composite `(user_id, id)` — a customer's manual credits, newest first; composite `(actor_user_id, id)` — an operator's; unique `transaction_id`, unique `operation_id`.
 
 ## Admin access
 

@@ -169,7 +169,10 @@ class EmergencyAdminAuthService:
             await self._record(user_id, AdminAccessAttemptOutcome.FAILED)
             return self._deny(user_id, DenialReason.EMPTY_PASSWORD)
 
-        encoded = self.policy.password_hash.get_secret_value()  # type: ignore[union-attr]
+        secret = self.policy.password_hash
+        if secret is None:  # pragma: no cover - `enabled` was checked above
+            return AuthenticationResult.denied(DenialReason.NOT_CONFIGURED)
+        encoded = secret.get_secret_value()
         if not await self._run(self._verify, password, encoded):
             await self._record(user_id, AdminAccessAttemptOutcome.FAILED)
             return self._deny(user_id, DenialReason.WRONG_PASSWORD)

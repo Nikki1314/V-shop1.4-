@@ -43,6 +43,8 @@ dated by their commits.
   ledger row. `AdminUserService.resolve_customer` names the target: a Telegram
   id exactly, or a `@username` / `t.me/` link matched case-insensitively and
   refused when missing or stored for more than one customer.
+- **Hash tool minimum length.** `python -m app.hash_emergency_password` refuses a
+  password shorter than twelve characters; verification itself is unchanged.
 - **`keyed_lock` and event loops.** The lock registry starts afresh when the running
   event loop changes, so a key contended in one test's loop is never handed to the
   next test as a lock it cannot wait on. No behaviour change for the bot, which

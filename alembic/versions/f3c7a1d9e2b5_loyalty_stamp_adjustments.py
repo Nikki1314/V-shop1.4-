@@ -103,9 +103,18 @@ def upgrade() -> None:
         ["user_id", "id"],
         unique=False,
     )
+    op.create_index(
+        "ix_loyalty_stamp_adjustments_actor_user_id_id",
+        "loyalty_stamp_adjustments",
+        ["actor_user_id", "id"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
     _refuse_to_forget_who_credited_stamps()
+    op.drop_index(
+        "ix_loyalty_stamp_adjustments_actor_user_id_id", table_name="loyalty_stamp_adjustments"
+    )
     op.drop_index("ix_loyalty_stamp_adjustments_user_id_id", table_name="loyalty_stamp_adjustments")
     op.drop_table("loyalty_stamp_adjustments")

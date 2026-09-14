@@ -544,6 +544,7 @@ def test_the_migration_creates_exactly_the_models_constraints() -> None:
         "uq_loyalty_stamp_adjustments_transaction_id",
         "uq_loyalty_stamp_adjustments_operation_id",
         "ix_loyalty_stamp_adjustments_user_id_id",
+        "ix_loyalty_stamp_adjustments_actor_user_id_id",
     ):
         assert name in source
     assert 'down_revision: str | None = "e8b2c4d6f1a3"' in source

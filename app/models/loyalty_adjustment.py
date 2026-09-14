@@ -47,8 +47,9 @@ class LoyaltyStampAdjustment(Base, TimestampMixin):
         ),
         UniqueConstraint("transaction_id", name="uq_loyalty_stamp_adjustments_transaction_id"),
         UniqueConstraint("operation_id", name="uq_loyalty_stamp_adjustments_operation_id"),
-        # A customer's manual credits, newest first.
+        # A customer's manual credits, newest first — and an operator's.
         Index("ix_loyalty_stamp_adjustments_user_id_id", "user_id", "id"),
+        Index("ix_loyalty_stamp_adjustments_actor_user_id_id", "actor_user_id", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

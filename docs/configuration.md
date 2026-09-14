@@ -62,8 +62,8 @@ Make the hash on a trusted machine and paste only the hash into `.env`:
 python -m app.hash_emergency_password
 ```
 
-It prompts twice without echo and prints the `EMERGENCY_ADMIN_PASSWORD_HASH=…`
-line. Use a long random password — the secret is shared by everyone who may use
+It prompts twice without echo, refuses anything under twelve characters, and prints
+the `EMERGENCY_ADMIN_PASSWORD_HASH=…` line. Use a long random password — the secret is shared by everyone who may use
 it — and rotate it after every use. The hash is read as a `SecretStr`, never
 logged, and never sent to Telegram. A user locked out is answered exactly like a
 wrong password; the attempts and the sessions they open are recorded in
