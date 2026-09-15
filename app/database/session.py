@@ -175,10 +175,14 @@ async def close_db() -> None:
 
 
 @asynccontextmanager
-async def get_session() -> AsyncGenerator[AsyncSession]:
-    """Yield an async database session with automatic cleanup."""
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Yield an async database session with automatic commit and rollback."""
     session = get_session_factory()()
     try:
         yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
     finally:
         await session.close()
