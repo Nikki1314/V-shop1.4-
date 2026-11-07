@@ -2,6 +2,7 @@
 aiogram>=3.15,<4
 SQLAlchemy[asyncio]>=2.0.36,<3
 asyncpg>=0.30.0
+psycopg[binary]
 alembic>=1.14.0
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
